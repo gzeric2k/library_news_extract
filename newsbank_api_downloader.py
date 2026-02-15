@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-NewsBank 按钮下载器
-模拟点击网页"Download PDF"按钮，通过API payload获取文章内容
+NewsBank API 下载器
+通过直接调用NewsBank的API获取文章内容
 
 功能：
 1. 用户输入NewsBank搜索结果页URL
-2. 脚本访问页面并获取必要的参数（instance_id等）
-3. 模拟点击"Download PDF"按钮，发送API请求
+2. 脚本访问页面并获取必要的参数
+3. 直接调用API获取多篇文章完整内容
 4. 从响应中解析文章列表和内容
 5. 保存文章为文本文件
 
 使用方法：
-    python newsbank_button_downloader.py "https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results?..."
+    python newsbank_api_downloader.py "https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results?..."
     
-    python newsbank_button_downloader.py "URL" --max-pages 3
+    python newsbank_api_downloader.py "URL" --max-pages 3
     
-    python newsbank_button_downloader.py "URL" --download-all
+    python newsbank_api_downloader.py "URL" --download-all
 
 作者: AI Assistant
 日期: 2026-02-15
@@ -53,17 +53,15 @@ class ArticleInfo:
         return asdict(self)
 
 
-class NewsBankButtonDownloader:
-    """NewsBank 按钮下载器 - 模拟点击Download PDF按钮"""
+class NewsBankAPIDownloader:
+    """NewsBank API 下载器 - 直接调用API获取文章"""
     
     def __init__(self,
                  headless: bool = False,
                  max_pages: int = 10,
-                 download_limit: int = 50,
-                 output_dir: str = "articles_button"):
+                 output_dir: str = "articles_api"):
         self.headless = headless
         self.max_pages = max_pages
-        self.download_limit = download_limit
         
         self.cookie_file = Path("cookies/newsbank_auth.json")
         self.output_dir = Path(output_dir)
@@ -139,6 +137,70 @@ class NewsBankButtonDownloader:
             print(f"[错误] 登录失败: {e}")
             return False
     
+    def _build_search_url(self, 
+                         keyword: str,
+                         maxresults: int = 200,
+                         source: str = "Australian Financial Review Collection",
+                         year_from: Optional[int] = None,
+                         year_to: Optional[int] = None) -> str:
+        """
+        根据关键字构建NewsBank搜索URL
+        
+        参数:
+            keyword: 搜索关键字
+            maxresults: 最大结果数（建议设为20，过大可能被限制）
+            source: 数据源名称
+            year_from: 起始年份
+            year_to: 结束年份
+        
+        返回:
+            完整的搜索URL
+        """
+        # 基础URL
+        base_url = "https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results"
+        
+        # 参数构建
+        params = {
+            "p": "AWGLNB",
+            "hide_duplicates": "2",
+            "fld-base-0": "alltext",
+            "sort": "YMD_date:D",
+            "maxresults": str(maxresults),
+            "val-base-0": keyword,
+        }
+        
+        # 构建t参数（数据源）
+        source_encoded = quote(source)
+        params["t"] = f"favorite:AFRWAFRN!{source_encoded}"
+        
+        # 构建年份过滤
+        if year_from or year_to:
+            if year_from and year_to:
+                year_filter = f"year:{year_from}%21{year_to}"
+            elif year_from:
+                year_filter = f"year:{year_from}"
+            else:
+                year_filter = f"year:{year_to}"
+            params["t"] = f"{params['t']}/{year_filter}"
+        
+        # 构建URL
+        query_string = "&".join([f"{k}={quote(v)}" if ' ' in v or '%' in v else f"{k}={v}" for k, v in params.items()])
+        
+        # 特殊处理val-base-0，因为它包含空格
+        query_string = f"p=AWGLNB&hide_duplicates=2&fld-base-0=alltext&sort=YMD_date:D&maxresults={maxresults}&val-base-0={quote(keyword)}&t={quote(params['t'])}"
+        
+        return f"{base_url}?{query_string}"
+    
+    def _is_search_keyword(self, input_text: str) -> bool:
+        """判断输入是搜索关键字还是URL"""
+        # 如果包含空格且不是完整URL，认为是关键字
+        if ' ' in input_text and not input_text.startswith('http'):
+            return True
+        # 如果不包含apps/news/results，认为是关键字
+        if 'apps/news/results' not in input_text:
+            return True
+        return False
+    
     def _extract_article_ids_from_page(self, html_content: str) -> List[str]:
         """从页面HTML中提取文章ID列表"""
         article_ids = []
@@ -166,6 +228,175 @@ class NewsBankButtonDownloader:
         
         return article_ids
     
+    async def _extract_selected_articles_metadata(self, page: Page) -> List[Dict]:
+        """
+        从页面提取选中文章的元数据
+        
+        返回格式:
+        [{"docref":"news/xxx","cache_type":"AWGLNB","size":xxx,"pbi":"xxx","title":"xxx","product":"AWGLNB"}, ...]
+        
+        这个格式是 nb-cache-doc/js/set API 所需的
+        """
+        print("  [提取] 提取选中文章的元数据...")
+        
+        try:
+            # 从页面提取选中复选框的文章信息
+            metadata = await page.evaluate("""() => {
+                const selectedArticles = [];
+                
+                // 查找所有选中的文章复选框
+                const checkboxes = document.querySelectorAll('article.search-hits__hit input[type="checkbox"]:checked');
+                
+                checkboxes.forEach(checkbox => {
+                    // 找到对应的文章元素
+                    const article = checkbox.closest('article.search-hits__hit');
+                    if (!article) return;
+                    
+                    // 提取文章信息
+                    // 方法1: 从data属性提取
+                    const docref = article.dataset.docId || article.dataset.docId;
+                    const pbi = article.dataset.pbi || '';
+                    const cacheType = article.dataset.cacheType || 'AWGLNB';
+                    const product = article.dataset.product || 'AWGLNB';
+                    
+                    // 方法2: 从href中提取docref
+                    const link = article.querySelector('h3.search-hits__hit__title a');
+                    const href = link ? link.href : '';
+                    const docMatch = href.match(/doc=([^&]+)/);
+                    const docIdFromHref = docMatch ? 'news/' + docMatch[1] : docref;
+                    
+                    // 提取标题
+                    const title = link ? link.textContent.trim() : '';
+                    
+                    // 提取size (可能需要在data属性中查找)
+                    const size = article.dataset.size || '0';
+                    
+                    if (docIdFromHref || docref) {
+                        selectedArticles.push({
+                            docref: docIdFromHref || docref,
+                            cache_type: cacheType,
+                            size: parseInt(size) || 0,
+                            pbi: pbi,
+                            title: title,
+                            product: product
+                        });
+                    }
+                });
+                
+                return selectedArticles;
+            }""")
+            
+            print(f"  [提取] 找到 {len(metadata)} 篇选中文章")
+            
+            # 打印前几篇用于调试
+            for i, art in enumerate(metadata[:3]):
+                print(f"    [{i+1}] {art.get('title', 'N/A')[:30]}... docref={art.get('docref', 'N/A')}")
+            
+            return metadata
+            
+        except Exception as e:
+            print(f"  [错误] 提取选中文章元数据失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    async def _capture_selected_articles_payload(self, page: Page) -> Optional[str]:
+        """
+        通过监听网络请求捕获实际发送的payload
+        
+        在选中文章后，网页会发送一个POST请求到 nb-cache-doc/js/set
+        这个方法捕获该请求的body，即实际使用的payload
+        """
+        print("  [捕获] 监听网络请求以捕获实际payload...")
+        
+        captured_payloads = []
+        
+        async def handle_request(request):
+            # 监听 nb-cache-doc/js/set 或 nb-multidocs/get 请求
+            url = request.url
+            if "nb-cache-doc" in url or "nb-multidocs" in url:
+                try:
+                    # 获取请求的post数据
+                    post_data = request.post_data
+                    if post_data:
+                        if isinstance(post_data, bytes):
+                            post_data = post_data.decode('utf-8')
+                        
+                        # 只捕获包含docs=的请求（这是设置选中文章 的请求）
+                        if 'docs=' in post_data:
+                            captured_payloads.append({
+                                'url': url,
+                                'post_data': post_data,
+                                'timestamp': time.time()
+                            })
+                            print(f"  [捕获] 捕获到请求: {request.method} {url.split('/')[-1]}")
+                            print(f"  [捕获] Payload: {post_data[:150]}...")
+                except Exception as e:
+                    pass  # 静默处理，避免过多输出
+        
+        # 设置监听器
+        page.on("request", handle_request)
+        
+        # 等待一段时间，收集所有请求
+        print("  [等待] 等待捕获请求...")
+        for i in range(4):
+            await asyncio.sleep(1)
+            if captured_payloads:
+                print(f"  [信息] 已捕获 {len(captured_payloads)} 个相关请求")
+        
+        if captured_payloads:
+            # 使用最后一个包含docs=的请求（通常是最新的）
+            # 因为选中操作会触发多次请求
+            last_payload = captured_payloads[-1]['post_data']
+            print(f"  [成功] 使用最后一个请求的payload ({len(last_payload)} 字符)")
+            return last_payload
+        else:
+            print(f"  [警告] 未捕获到包含docs=的payload")
+            return None
+    
+    def _parse_captured_payload(self, payload_str: str) -> Optional[List[Dict]]:
+        """
+        解析捕获的payload字符串，提取文章元数据列表
+        
+        返回格式:
+        [{"docref":"news/xxx","cache_type":"AWGLNB","size":xxx,"pbi":"xxx","title":"xxx","product":"AWGLNB"}, ...]
+        """
+        try:
+            # payload可能是URL编码的
+            decoded = unquote(payload_str)
+            
+            # 打印完整的解码后的payload用于调试
+            print(f"  [调试] 完整payload: {decoded[:500]}...")
+            
+            # 提取 docs= 后面的JSON数组
+            if 'docs=' in decoded:
+                json_part = decoded.split('docs=')[1]
+                
+                # 可能还包含其他参数，用 & 分隔
+                if '&' in json_part:
+                    json_part = json_part.split('&')[0]
+                
+                # 解析JSON
+                articles = json.loads(json_part)
+                print(f"  [解析] 从payload中提取到 {len(articles)} 篇文章")
+                
+                # 打印文章标题用于调试
+                for i, art in enumerate(articles[:5]):
+                    print(f"    [{i+1}] {art.get('title', 'N/A')[:40]}")
+                    print(f"        docref: {art.get('docref', 'N/A')}")
+                
+                return articles
+            else:
+                # 尝试直接解析
+                articles = json.loads(decoded)
+                return articles
+                
+        except Exception as e:
+            print(f"  [解析] 解析payload失败: {e}")
+            # 打印原始payload用于调试
+            print(f"  [调试] 原始payload: {payload_str[:300]}...")
+            return None
+    
     def _build_download_payload(self, 
                                 page_num: int = 1, 
                                 article_ids: Optional[List[str]] = None,
@@ -177,14 +408,14 @@ class NewsBankButtonDownloader:
         基于newsbank-api-download.txt中的参数结构
         """
         # 基础payload
-        # maxresults=100 可以一次获取最多100篇文章的完整内容
+        # maxresults=20 可以一次获取最多20篇文章的完整内容，不能设置得太大，防止限流
         payload = {
             "page": str(page_num),
             "load_pager": "true",
             "p": p_param,
             "action": "download",
             "label": "Multidocs Display pane",
-            "maxresults": "100",  # 改为100，一次获取更多文章
+            "maxresults": "20",  # 改为20，系统的预设值。这个数字放的过大可能触发服务器限制
             "pdf_enabled": "true",
             "pdf_label": "Download PDF",
             "pdf_path": "multidocs",
@@ -719,13 +950,25 @@ class NewsBankButtonDownloader:
         print("-" * 40)
         
         try:
-            # 使用用户提供的payload格式
+            # 使用_build_download_payload方法正确构建payload，包含article_ids
+            payload = self._build_download_payload(
+                page_num=1,
+                article_ids=article_ids,
+                p_param=p_param
+            )
+            
+            # 将payload转换为URL编码的form data字符串
+            form_parts = []
+            for key, value in payload.items():
+                if isinstance(value, str):
+                    form_parts.append(f"{key}={quote(value)}")
+                else:
+                    form_parts.append(f"{key}={value}")
+            form_data_str = "&".join(form_parts)
+            
             print(f"  [请求] POST {self.api_endpoint}")
-            
-            # 构建form data字符串（使用用户提供的参数格式）
-            form_data_str = f"getaction=download&p={p_param}&pdf_path=multidocs&maxresults=100&pdf_params=action%3Dpdf%26format%3Dpdf%26pdf_enabled%3Dfalse%26load_pager%3Dfalse%26maxresults%3D100&zustat_category_override=co_sc_pdf_download"
-            
-            print(f"  [参数] {form_data_str[:100]}...")
+            print(f"  [文章ID数量] {len(article_ids) if article_ids else 0}")
+            print(f"  [参数] {form_data_str[:150]}...")
             
             # 使用Playwright的API上下文发送POST请求（自动携带cookies）
             try:
@@ -790,6 +1033,212 @@ class NewsBankButtonDownloader:
             print(f"  [错误] 直接调用API失败: {e}")
             return None
     
+    async def _call_download_api_with_payload(self, page: Page, captured_payload: str, p_param: str = "AWGLNB") -> Optional[Dict]:
+        """
+        使用捕获的payload直接调用下载API
+        
+        这是最可靠的方式，因为使用的是浏览器实际发送的payload
+        """
+        print("\n[使用捕获的Payload调用API]")
+        print("-" * 40)
+        
+        try:
+            # 构建完整的请求payload
+            # 捕获的payload可能只是docs=部分，需要补充其他参数
+            full_payload = captured_payload
+            
+            # 检查是否需要添加额外参数
+            if 'instance_id' not in captured_payload:
+                # 可能需要从页面获取instance_id
+                instance_id = await page.evaluate("""() => {
+                    // 尝试从页面获取instance_id
+                    const el = document.querySelector('[data-instance-id]');
+                    if (el) return el.dataset.instanceId;
+                    // 或者从URL参数获取
+                    const urlParams = new URLSearchParams(window.location.search);
+                    return urlParams.get('instance_id') || '';
+                }""")
+                
+                if instance_id:
+                    full_payload = f"{captured_payload}&instance_id={instance_id}"
+            
+            print(f"  [请求] POST {self.api_endpoint}")
+            print(f"  [Payload] {full_payload[:200]}...")
+            
+            # 使用Playwright发送请求
+            try:
+                api_response = await page.context.request.post(
+                    self.api_endpoint,
+                    data=full_payload,
+                    headers={
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Referer': page.url
+                    }
+                )
+                
+                response_body = await api_response.text()
+                response = {
+                    "status": api_response.status,
+                    "body": response_body,
+                    "url": api_response.url
+                }
+            except Exception as api_err:
+                print(f"  [警告] API请求失败: {api_err}")
+                # 回退到fetch方式
+                response = await page.evaluate("""async ({url, payload}) => {
+                    try {
+                        const response = await fetch(url, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                                'X-Requested-With': 'XMLHttpRequest'
+                            },
+                            body: payload,
+                            credentials: 'include'
+                        });
+                        
+                        const text = await response.text();
+                        return {
+                            status: response.status,
+                            body: text,
+                            url: response.url,
+                            ok: response.ok
+                        };
+                    } catch (e) {
+                        return {status: 0, body: '', error: e.message};
+                    }
+                }""", {"url": self.api_endpoint, "payload": full_payload})
+            
+            if response and response.get('status') == 200:
+                print(f"  [成功] API调用成功 (状态: {response['status']})")
+                return {
+                    "status": response['status'],
+                    "body": response['body'],
+                    "url": response.get('url', self.api_endpoint)
+                }
+            else:
+                print(f"  [警告] API调用失败 (状态: {response.get('status') if response else 'None'})")
+                return None
+                
+        except Exception as e:
+            print(f"  [错误] 调用API失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    async def _call_download_api_with_articles(self, page: Page, article_metadata: List[Dict], p_param: str = "AWGLNB") -> Optional[Dict]:
+        """
+        使用文章元数据构建payload并调用下载API
+        
+        article_metadata 格式:
+        [{"docref":"news/xxx","cache_type":"AWGLNB","size":xxx,"pbi":"xxx","title":"xxx","product":"AWGLNB"}, ...]
+        """
+        print("\n[使用文章元数据调用API]")
+        print("-" * 40)
+        
+        try:
+            # 从页面获取必要的参数
+            instance_id = await page.evaluate("""() => {
+                // 尝试从各种来源获取instance_id
+                const urlParams = new URLSearchParams(window.location.search);
+                return urlParams.get('instance_id') || 
+                       urlParams.get('i') || 
+                       document.querySelector('[data-instance-id]')?.dataset?.instanceId ||
+                       '';
+            }""")
+            
+            # 构建docs JSON数组
+            docs_json = json.dumps(article_metadata[:100])  # 最多100篇
+            
+            # 构建完整的payload
+            # 根据实际观察到的格式
+            form_data_parts = [
+                f"docs={quote(docs_json)}",
+                f"p={p_param}",
+                f"instance_id={instance_id}" if instance_id else "",
+                "action=download",
+                "format=html",
+                "load_pager=false"
+            ]
+            
+            # 过滤空值
+            form_data_parts = [p for p in form_data_parts if p]
+            form_data_str = "&".join(form_data_parts)
+            
+            print(f"  [请求] POST {self.api_endpoint}")
+            print(f"  [文章数] {len(article_metadata)}")
+            print(f"  [Payload] {form_data_str[:200]}...")
+            
+            # 发送请求
+            try:
+                api_response = await page.context.request.post(
+                    self.api_endpoint,
+                    data=form_data_str,
+                    headers={
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Referer': page.url,
+                        'Cache-Control': 'no-cache',
+                        'Pragma': 'no-cache'
+                    }
+                )
+                
+                response_body = await api_response.text()
+                response = {
+                    "status": api_response.status,
+                    "body": response_body,
+                    "url": api_response.url
+                }
+            except Exception as api_err:
+                print(f"  [警告] API请求失败: {api_err}")
+                # 回退到fetch
+                response = await page.evaluate("""async ({url, payload}) => {
+                    try {
+                        const response = await fetch(url, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'Cache-Control': 'no-cache'
+                            },
+                            body: payload,
+                            credentials: 'include'
+                        });
+                        
+                        const text = await response.text();
+                        return {
+                            status: response.status,
+                            body: text,
+                            url: response.url,
+                            ok: response.ok
+                        };
+                    } catch (e) {
+                        return {status: 0, body: '', error: e.message};
+                    }
+                }""", {"url": self.api_endpoint, "payload": form_data_str})
+            
+            if response and response.get('status') == 200:
+                print(f"  [成功] API调用成功 (状态: {response['status']})")
+                return {
+                    "status": response['status'],
+                    "body": response['body'],
+                    "url": response.get('url', self.api_endpoint)
+                }
+            else:
+                print(f"  [警告] API调用失败 (状态: {response.get('status') if response else 'None'})")
+                return None
+                
+        except Exception as e:
+            print(f"  [错误] 调用API失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     async def fetch_articles_via_api(self, 
                                      page: Page, 
                                      base_url: str,
@@ -797,8 +1246,11 @@ class NewsBankButtonDownloader:
         """
         通过API获取文章列表
         
-        方法1: 点击按钮触发API（首选）
-        方法2: 直接调用API（备选）
+        流程：
+        1. 选中所有文章
+        2. 捕获实际发送的payload（从网络请求）
+        3. 如果捕获失败，从页面直接构建payload
+        4. 使用payload调用下载API
         """
         print(f"\n[第 {page_num} 页] 获取文章列表")
         print("-" * 40)
@@ -819,19 +1271,57 @@ class NewsBankButtonDownloader:
             query_params = parse_qs(parsed_url.query)
             p_param = query_params.get('p', ['AWGLNB'])[0]
             
-            # 新流程：先选中所有文章，然后直接调用API（不点击下载按钮，避免弹窗）
+            # 步骤1: 选中所有文章
             print(f"  [步骤1] 选中所有文章...")
             select_success = await self.select_all_articles(page)
             if select_success:
                 print(f"  [成功] 文章已选中")
             else:
-                print(f"  [警告] 选择文章可能未成功，继续尝试调用API...")
+                print(f"  [警告] 选择文章可能未成功，继续尝试...")
             
             # 等待一下确保选中状态生效
             await asyncio.sleep(1)
             
-            # 步骤2: 直接调用API获取文章数据
-            print(f"  [步骤2] 调用API获取文章数据...")
+            # 步骤2: 尝试捕获实际的网络请求payload
+            print(f"  [步骤2] 捕获实际payload...")
+            captured_payload = await self._capture_selected_articles_payload(page)
+            
+            # 用于存储文章元数据
+            article_metadata = None
+            
+            if captured_payload:
+                # 解析捕获的payload获取文章元数据
+                article_metadata = self._parse_captured_payload(captured_payload)
+            
+            # 如果没有捕获到payload，或者需要强制刷新，从页面直接构建
+            if not article_metadata:
+                print(f"  [备选] 从页面直接提取文章元数据...")
+                article_metadata = await self._extract_selected_articles_metadata(page)
+            
+            if article_metadata and len(article_metadata) > 0:
+                print(f"  [成功] 获取到 {len(article_metadata)} 篇文章元数据")
+                
+                # 使用文章元数据构建payload并调用API
+                print(f"  [步骤3] 构建payload并调用下载API...")
+                response_data = await self._call_download_api_with_articles(page, article_metadata, p_param)
+                
+                if response_data and response_data.get('body'):
+                    body = response_data['body']
+                    print(f"  [调试] API响应长度: {len(body)} bytes")
+                    
+                    # 检查是否是PDF
+                    if body.startswith('%PDF'):
+                        print("  [警告] API返回PDF")
+                        articles = await self._parse_articles_from_page(page, page_num)
+                    else:
+                        articles = self._parse_api_response(body, page_num)
+                        print(f"  [成功] 从API响应解析到 {len(articles)} 篇文章")
+                
+                return articles
+            
+            # 如果完全没有获取到文章元数据，回退到原有方法
+            print(f"  [回退] 未能获取文章元数据，使用原有方法...")
+            print(f"  [步骤3] 调用API获取文章数据...")
             response_data = await self.call_download_api_directly(page, article_ids, p_param)
             
             if response_data and response_data.get('body'):
@@ -1440,43 +1930,18 @@ class NewsBankButtonDownloader:
         else:
             print(f"[说明] API响应中无全文，全部 {len(articles)} 篇文章需要访问页面获取")
         
-        # 注意：如果API响应成功，文章应该已经包含全文
-        # 只有在API响应不包含全文时，才需要批量下载
-        if articles_without_fulltext > 0 and articles_with_fulltext == 0:
-            print(f"[说明] API响应不包含全文，需要逐个访问页面获取")
-            await self.batch_download_full_text(page, articles)
-        elif articles_without_fulltext > 0 and articles_with_fulltext > 0:
-            print(f"[说明] 部分文章缺少全文，但API已成功提供{articles_with_fulltext}篇，直接保存现有内容")
+        # 检查是否是API模式成功获取的文章（有全文）
+        api_success = articles_with_fulltext > 0
         
-        if not download_all:
-            # 交互式选择
-            print("\n输入要保存的文章编号（用逗号分隔）")
-            print("例如: 1,3,5,7-10")
-            print("输入 'all' 保存所有文章")
-            print("输入 'q' 跳过")
-            
-            user_input = input("\n请选择: ").strip().lower()
-            
-            if user_input == 'q':
-                print("跳过保存")
-                return
-            
-            if user_input == 'all':
-                selected = articles
-            else:
-                # 解析选择
-                selected_indices = set()
-                for part in user_input.split(','):
-                    part = part.strip()
-                    if '-' in part:
-                        start, end = part.split('-')
-                        selected_indices.update(range(int(start)-1, int(end)))
-                    else:
-                        selected_indices.add(int(part) - 1)
-                
-                selected = [articles[i] for i in selected_indices if 0 <= i < len(articles)]
-        else:
+        if api_success:
+            # API成功获取文章，直接保存所有文章，无需确认
+            print(f"\n[API模式] 检测到 {articles_with_fulltext} 篇有全文，直接保存所有 {len(articles)} 篇文章")
             selected = articles
+        else:
+            # API未成功，直接退出
+            print(f"\n[错误] API未成功获取文章全文，退出")
+            import sys
+            sys.exit(1)
         
         if not selected:
             print("未选择任何文章")
@@ -1486,7 +1951,8 @@ class NewsBankButtonDownloader:
         
         downloaded = 0
         
-        for i, article in enumerate(selected[:self.download_limit], 1):
+        # 移除下载限制，保存所有文章
+        for i, article in enumerate(selected, 1):
             print(f"\n[{i}/{len(selected)}] {article.title[:50]}...")
             
             try:
@@ -1551,11 +2017,10 @@ Full Text:
     async def download_from_url(self, url: str, download_all: bool = False):
         """从URL下载文章的主方法"""
         print("=" * 80)
-        print("NewsBank 按钮下载器")
+        print("NewsBank API 下载器")
         print("=" * 80)
         print(f"\n目标URL: {url[:80]}...")
         print(f"最大页数: {self.max_pages}")
-        print(f"下载限制: {self.download_limit} 篇")
         
         # 启动浏览器
         async with async_playwright() as p:
@@ -1651,60 +2116,84 @@ Full Text:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="NewsBank 按钮下载器 - 模拟点击Download PDF按钮获取文章",
+        description="NewsBank API 下载器 - 通过API获取文章内容",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用方法示例:
 
-1. 基础使用（交互式选择）:
-   python newsbank_button_downloader.py "https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results?..."
+1. 使用搜索关键字:
+   python newsbank_api_downloader.py "treasury wine penfolds" --max-results 200
 
-2. 自动下载所有文章:
-   python newsbank_button_downloader.py "URL" --download-all
+2. 指定年份范围:
+   python newsbank_api_downloader.py "treasury wine" --year-from 2014 --year-to 2020
 
-3. 限制页数:
-   python newsbank_button_downloader.py "URL" --max-pages 5
+3. 指定数据源:
+   python newsbank_api_downloader.py "treasury wine" --source "Australian Financial Review Collection"
 
-4. 无头模式:
-   python newsbank_button_downloader.py "URL" --headless --download-all
+4. 使用完整URL:
+   python newsbank_api_downloader.py "https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results?..."
 
-URL获取方法:
-   1. 在浏览器中访问NewsBank并搜索
-   2. 调整搜索条件到满意结果
-   3. 复制浏览器地址栏的URL
-   4. 使用本工具下载
+5. 限制页数和下载数:
+   python newsbank_api_downloader.py "treasury wine" --max-pages 5 --max-results 100
+
+6. 无头模式:
+   python newsbank_api_downloader.py "treasury wine" --headless
         """
     )
     
-    parser.add_argument("url", help="NewsBank搜索URL")
+    parser.add_argument("keyword_or_url", help="搜索关键字或NewsBank搜索URL")
+    
+    parser.add_argument("--max-results", type=int, default=200,
+                       help="最大结果数 (默认: 200)")
     
     parser.add_argument("--max-pages", type=int, default=10,
                        help="最大扫描页数 (默认: 10)")
     
-    parser.add_argument("--download-limit", type=int, default=50,
-                       help="最大下载文章数 (默认: 50)")
+    parser.add_argument("--year-from", type=int, default=None,
+                       help="起始年份 (例如: 2014)")
     
-    parser.add_argument("--download-all", action="store_true",
-                       help="自动下载所有文章（跳过交互选择）")
+    parser.add_argument("--year-to", type=int, default=None,
+                       help="结束年份 (例如: 2020)")
+    
+    parser.add_argument("--source", type=str, default="Australian Financial Review Collection",
+                       help="数据源名称 (默认: Australian Financial Review Collection)")
     
     parser.add_argument("--headless", action="store_true",
                        help="无头模式")
     
-    parser.add_argument("--output-dir", default="articles_button",
-                       help="输出目录 (默认: articles_button)")
+    parser.add_argument("--output-dir", default="articles_api",
+                       help="输出目录 (默认: articles_api)")
     
     args = parser.parse_args()
     
-    # 创建下载器
-    downloader = NewsBankButtonDownloader(
+    # 创建下载器实例
+    downloader = NewsBankAPIDownloader(
         headless=args.headless,
         max_pages=args.max_pages,
-        download_limit=args.download_limit,
         output_dir=args.output_dir
     )
     
+    # 判断输入是关键字还是URL
+    if downloader._is_search_keyword(args.keyword_or_url):
+        # 是关键字，构建搜索URL
+        print(f"\n[信息] 检测为搜索关键字: {args.keyword_or_url}")
+        search_url = downloader._build_search_url(
+            keyword=args.keyword_or_url,
+            maxresults=args.max_results,
+            source=args.source,
+            year_from=args.year_from,
+            year_to=args.year_to
+        )
+        print(f"[信息] 生成的搜索URL:")
+        print(f"  {search_url}")
+        url = search_url
+    else:
+        # 是URL，直接使用
+        url = args.keyword_or_url
+        print(f"\n[信息] 使用提供的URL: {url}")
+    
     # 执行下载
-    asyncio.run(downloader.download_from_url(args.url, args.download_all))
+    asyncio.run(downloader.download_from_url(url, download_all=True))
 
 
 if __name__ == "__main__":
