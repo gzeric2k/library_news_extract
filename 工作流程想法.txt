@@ -1,0 +1,12 @@
+1. 访问https://eresources.sl.nsw.gov.au/newsbank-including-access-australia
+2. Log in as a Library member
+3. 通过保存cookies的方式保存credentials，这样可以以后重复访问网站
+4. 登陆成功之后，会跳转到网站https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/easy-search?p=AWGLNB
+5. 访问https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/browse-multi?p=AWGLNB&t=favorite%3AAFRWAFRN%21Australian%2520Financial%2520Review%2520Collection&action=browse
+6. 在此文本框输入要搜索的关键字(文本框显示为"Enter any keyword, such as a name, event or topic
+7. 点击Search按钮
+8. 只选择Preview框里面有文本的文章
+9. 保存文章
+10. 翻页，继续操作
+
+
