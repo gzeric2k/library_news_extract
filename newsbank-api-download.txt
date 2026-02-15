@@ -1,0 +1,56 @@
+##Headers##
+Request URL
+https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/nb-multidocs/get
+Request Method
+POST
+Status Code
+200 OK
+Remote Address
+203.8.119.37:443
+Referrer Policy
+strict-origin-when-cross-origin
+
+
+##Payload##
+page=1&load_pager=true&p=AWGLNB&action=download&label=Multidocs+Display+pane&maxresults=20&pdf_enabled=true&pdf_label=Download+PDF&pdf_path=multidocs&pdf_filename=NewsBank+Multiple+Articles.pdf&pdf_params=action%3Dpdf%26format%3Dpdf%26pdf_enabled%3Dfalse%26load_pager%3Dfalse%26maxresults%3D100&instance_id=nbcore-multidoc-display-pane-69917794cf77e&zustat_category_override=co_sc_pdf_download
+
+
+
+##Analysis##
+NewsBank API Payload 参数分析
+从 newsbank-api-download.txt 文件解析，共 12 个参数：
+基础参数
+| 参数名 | 值 | 说明 |
+|--------|-----|------|
+| page | 1 | 页码 |
+| action | download | 操作类型：下载 |
+| p | AWGLNB | 数据源/产品代码 |
+| maxresults | 20 | 最大返回结果数 |
+| load_pager | true | 是否加载分页器 |
+PDF 相关参数
+| 参数名 | 值 | 说明 |
+|--------|-----|------|
+| pdf_enabled | true | 启用PDF功能 |
+| pdf_label | Download PDF | PDF下载按钮标签 |
+| pdf_path | multidocs | PDF路径 |
+| pdf_filename | NewsBank Multiple Articles.pdf | PDF文件名 |
+| pdf_params | action=pdf&format=pdf&pdf_enabled=false&load_pager=false&maxresults=100 | URL编码的PDF参数 |
+实例与统计参数
+| 参数名 | 值 | 说明 |
+|--------|-----|------|
+| label | Multidocs Display pane | 显示标签 |
+| instance_id | nbcore-multidoc-display-pane-69917794cf77e | 实例唯一标识 |
+| zustat_category_override | co_sc_pdf_download | 统计分类覆盖 |
+---
+关键发现
+1. PDF参数嵌套：pdf_params 是 URL-encoded 的子参数串，解码后包含：
+   - action=pdf
+   - format=pdf
+   - pdf_enabled=false
+   - load_pager=false
+   - maxresults=100
+2. 结果数差异：
+   - 主请求 maxresults=20
+   - PDF参数中 maxresults=100（PDF生成时最多100条）
+3. 下载端点：https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/nb-multidocs/get
+这些参数可用于构建批量下载PDF的自动化请求。
