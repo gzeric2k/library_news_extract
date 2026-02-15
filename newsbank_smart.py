@@ -18,6 +18,11 @@ from urllib.parse import quote, urljoin
 
 from playwright.async_api import async_playwright
 
+from newsbank_search_builder import (
+    AdvancedSearchQuery, SearchField, BooleanOperator,
+    SearchTemplates, create_optimized_search
+)
+
 
 class ArticleIndex:
     """Article index for preview screening"""
@@ -448,8 +453,31 @@ class NewsBankSmartScraper:
                 # Navigate to search results
                 print("\n[Searching]")
                 print("-" * 40)
-                encoded_keyword = quote(keyword)
-                search_url = f"https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results?p=AWGLNB&hide_duplicates=2&fld-base-0=alltext&sort=YMD_date%3AD&maxresults=60&val-base-0={encoded_keyword}"
+                
+                # 检查是否使用预设搜索模板
+                if keyword.startswith("template:"):
+                    template_name = keyword.replace("template:", "").strip()
+                    print(f"[INFO] Using search template: {template_name}")
+                    search_query = create_optimized_search(template_name)
+                    print(search_query.get_search_summary())
+                    search_url = search_query.build_url()
+                else:
+                    # 构建优化的高级搜索查询
+                    print(f"[INFO] Building optimized search for: {keyword}")
+                    search_query = AdvancedSearchQuery()
+                    
+                    # 自动识别是否包含空格（短语）
+                    if ' ' in keyword:
+                        # 多词关键词：标题必须包含，全文也必须包含
+                        search_query.add_title_keyword(f'"{keyword}"', BooleanOperator.AND)
+                        search_query.add_condition(keyword, SearchField.ALL_TEXT, BooleanOperator.AND)
+                    else:
+                        # 单词关键词：全文搜索，同时标题加分
+                        search_query.add_condition(keyword, SearchField.ALL_TEXT)
+                        search_query.add_title_keyword(keyword, BooleanOperator.OR)
+                    
+                    print(search_query.get_search_summary())
+                    search_url = search_query.build_url()
                 
                 await page.goto(search_url, wait_until="networkidle", timeout=60000)
                 print(f"Search results loaded: {await page.title()}")
@@ -505,16 +533,58 @@ class NewsBankSmartScraper:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="NewsBank Smart Full-Text Scraper")
-    parser.add_argument("keyword", help="Search keyword")
-    parser.add_argument("--max-pages", type=int, default=3, help="Max search result pages")
+    parser = argparse.ArgumentParser(
+        description="NewsBank Smart Full-Text Scraper with Advanced Search",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+搜索关键词格式:
+  普通关键词: "treasury wine estates"
+  使用预设模板: "template:treasury_mergers"
+  
+可用模板:
+  - treasury_mergers: Treasury Wine并购主题（标题含品牌+全文并购词汇）
+  - treasury_strategy: Treasury Wine战略主题（标题品牌+战略词汇）
+  - treasury_financial: Treasury Wine财务主题（财报相关）
+
+高级搜索功能:
+  - 自动多字段搜索（标题+全文）
+  - 布尔逻辑组合（AND/OR/NOT）
+  - 通配符支持（*匹配多字符，?匹配单字符）
+  - 来源自动筛选（Australian Financial Review）
+        """
+    )
+    parser.add_argument("keyword", help="搜索关键词或使用 template:名称")
+    parser.add_argument("--max-pages", type=int, default=3, help="最大搜索页数（默认: 3）")
     parser.add_argument("--min-preview-words", type=int, default=30,
-                        help="Min words in preview to qualify (default: 30)")
+                        help="预览文本最小词数（默认: 30）")
     parser.add_argument("--max-full-articles", type=int, default=20,
-                        help="Max articles to download full text (default: 20)")
-    parser.add_argument("--headless", action="store_true", help="Headless mode")
+                        help="下载全文的最大文章数（默认: 20）")
+    parser.add_argument("--headless", action="store_true", help="无头模式（不显示浏览器）")
+    parser.add_argument("--show-url", action="store_true", 
+                        help="显示生成的搜索URL（用于调试）")
     
     args = parser.parse_args()
+    
+    # 如果只需要显示URL
+    if args.show_url:
+        if args.keyword.startswith("template:"):
+            template_name = args.keyword.replace("template:", "").strip()
+            search_query = create_optimized_search(template_name)
+        else:
+            search_query = AdvancedSearchQuery()
+            if ' ' in args.keyword:
+                search_query.add_title_keyword(f'"{args.keyword}"', BooleanOperator.AND)
+                search_query.add_condition(args.keyword, SearchField.ALL_TEXT, BooleanOperator.AND)
+            else:
+                search_query.add_condition(args.keyword, SearchField.ALL_TEXT)
+                search_query.add_title_keyword(args.keyword, BooleanOperator.OR)
+        
+        print(search_query.get_search_summary())
+        print("\n" + "="*80)
+        print("Generated Search URL:")
+        print("="*80)
+        print(search_query.build_url())
+        return 0
     
     scraper = NewsBankSmartScraper(
         headless=args.headless,
