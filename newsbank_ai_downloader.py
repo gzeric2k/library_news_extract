@@ -25,6 +25,7 @@ NewsBank AI智能下载器（LLM增强版）
     LLM_PROVIDER=auto
     LLM_MODEL=z-ai/glm4.7
     RELEVANCE_THRESHOLD=0.4
+    LLM_BATCH_SIZE=20                   # LLM每批处理的文章数（默认10，DeepSeek建议20-30）
 
 作者: AI Assistant
 日期: 2026-02-15
@@ -59,6 +60,17 @@ try:
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
+
+# 尝试导入 CLI Proxy Client
+CLI_PROXY_AVAILABLE = False
+CLIProxyClient = None
+is_proxy_available = None
+
+try:
+    from cli_proxy_client import CLIProxyClient, is_proxy_available
+    CLI_PROXY_AVAILABLE = True
+except ImportError:
+    pass
 
 # NVIDIA API配置
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
@@ -297,56 +309,82 @@ class URLParser:
 class LLMArticleFilter:
     """LLM智能文章筛选器"""
     
-    def __init__(self, 
-                 api_key: Optional[str] = None, 
+    def __init__(self,
+                 api_key: Optional[str] = None,
                  model: str = "gpt-3.5-turbo",
-                 base_url: Optional[str] = None, 
+                 base_url: Optional[str] = None,
                  provider: str = "auto",
-                 relevance_threshold: float = 0.4):
+                 relevance_threshold: float = 0.4,
+                 batch_size: int = 10):
         """
         初始化LLM筛选器
-        
+
         Args:
             api_key: API Key
             model: 模型名称
             base_url: API基础URL
-            provider: 提供商 ("nvidia", "openai", "auto")
+            provider: 提供商 ("nvidia", "openai", "cli-proxy", "auto")
             relevance_threshold: 相关性阈值
+            batch_size: 每批处理的文章数
         """
-        if not OPENAI_AVAILABLE:
-            raise ImportError("openai未安装，运行: pip install openai")
-        
         self.provider = self._detect_provider(api_key, base_url, provider)
+
+        # 检查是否需要 openai 包（cli-proxy 不需要）
+        if self.provider != "cli-proxy" and not OPENAI_AVAILABLE:
+            raise ImportError("openai未安装，运行: pip install openai")
+
         self.client = self._initialize_client(api_key, base_url)
         self.model = self._get_model_name(model)
         self.relevance_threshold = relevance_threshold
+        self.batch_size = batch_size
         self.target_keywords: List[str] = []
-        
+
         print(f"[LLM] 使用{self.provider.upper()} API, 模型: {self.model}")
         print(f"[LLM] 相关性阈值: {relevance_threshold}")
+        print(f"[LLM] 批次大小: {batch_size}")
     
-    def _detect_provider(self, api_key: Optional[str], base_url: Optional[str], 
-                        provider: str) -> str:
+    def _detect_provider(self, api_key: Optional[str], base_url: Optional[str],
+                         provider: str) -> str:
         """自动检测API提供商"""
         if provider != "auto":
             return provider
-        
+
+        # 检查是否是 CLI Proxy（通过 base_url 或环境变量）
+        if base_url and ("localhost" in base_url.lower() or "127.0.0.1" in base_url.lower()):
+            return "cli-proxy"
+
+        # 检查环境变量是否启用了 CLI Proxy
+        if os.getenv("CLI_PROXY_ENABLED", "false").lower() == "true":
+            return "cli-proxy"
+
         if base_url and "nvidia" in base_url.lower():
             return "nvidia"
-        
+
         if api_key and api_key.startswith("nvapi-"):
             return "nvidia"
-        
+
         return "openai"
     
     def _initialize_client(self, api_key: Optional[str], base_url: Optional[str]):
         """初始化API客户端"""
+        if self.provider == "cli-proxy":
+            if not CLI_PROXY_AVAILABLE or CLIProxyClient is None:
+                raise ImportError("cli_proxy_client 模块未找到，无法使用 CLI Proxy")
+
+            # 使用 CLI Proxy Client
+            proxy_url = base_url or os.getenv("CLI_PROXY_URL", "http://localhost:8080/v1")
+            return CLIProxyClient(
+                base_url=proxy_url,
+                api_key=api_key or "dummy-key",
+                timeout=int(os.getenv("CLI_PROXY_TIMEOUT", "60"))
+            )
+
         if not OPENAI_AVAILABLE:
             raise ImportError("openai 包未安装，无法初始化客户端")
-        
+
         # 使用类型忽略来避免 LSP 错误
         import openai as oai  # type: ignore
-        
+
         if self.provider == "nvidia":
             return oai.OpenAI(
                 api_key=api_key,
@@ -392,7 +430,7 @@ class LLMArticleFilter:
                 {"role": "user", "content": "Say 'API is working' and nothing else."}
             ]
             
-            response = self.client.chat.completions.create(
+            response = self.client.chat.completions.create(  # type: ignore
                 model=self.model,
                 messages=test_messages,
                 temperature=0.1,
@@ -419,18 +457,17 @@ class LLMArticleFilter:
             else:
                 return False, f"API 检测失败: {str(e)[:50]}"
     
-    async def filter_articles_batch(self, articles: List[ArticleInfo], 
-                                    batch_size: int = 10) -> List[ArticleInfo]:
+    async def filter_articles_batch(self, articles: List[ArticleInfo]) -> List[ArticleInfo]:
         """
         批量使用LLM筛选文章
         
         Args:
             articles: 文章列表
-            batch_size: 每批处理的文章数
         
         Returns:
             筛选后的文章列表（添加了relevance_score和relevance_reason）
         """
+        batch_size = self.batch_size
         if not self.target_keywords:
             print("[警告] 未设置目标关键词，跳过LLM筛选")
             return articles
@@ -491,14 +528,18 @@ class LLMArticleFilter:
 ..."""
         
         try:
-            response = self.client.chat.completions.create(
+            # 根据文章数量动态计算 max_tokens
+            # 每篇文章约需要 80 tokens（分数 + 简短理由）
+            max_tokens = max(800, len(articles) * 80)
+            
+            response = self.client.chat.completions.create(  # type: ignore
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a professional article relevance assessment assistant. Analyze news articles and provide relevance scores based on the given keywords. Be objective and consistent."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_tokens=800
+                max_tokens=max_tokens
             )
             
             content = response.choices[0].message.content or ""
@@ -607,17 +648,67 @@ class NewsBankAIDownloader:
     
     def _init_llm_filter(self):
         """初始化LLM筛选器"""
+        # 从环境变量读取配置
+        provider = os.getenv("LLM_PROVIDER", "auto")
+        model = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
+        threshold = float(os.getenv("RELEVANCE_THRESHOLD", "0.4"))
+        batch_size = int(os.getenv("LLM_BATCH_SIZE", "10"))
+
+        # 检查是否使用 CLI Proxy
+        cli_proxy_enabled = os.getenv("CLI_PROXY_ENABLED", "false").lower() == "true"
+
+        if cli_proxy_enabled or provider == "cli-proxy":
+            # 使用 CLI Proxy，不需要 OpenAI 包
+            if not CLI_PROXY_AVAILABLE:
+                print("[警告] cli_proxy_client 模块未找到，无法使用 CLI Proxy")
+                print("  请确保 cli_proxy_client.py 存在于项目目录中")
+                self.use_llm = False
+                return
+
+            print("[AI] 使用 CLI Proxy 模式")
+            try:
+                proxy_url = os.getenv("CLI_PROXY_URL", "http://localhost:8080/v1")
+                proxy_model = os.getenv("CLI_PROXY_MODEL", "local-model")
+
+                self.llm_filter = LLMArticleFilter(
+                    api_key="dummy-key",
+                    model=proxy_model,
+                    base_url=proxy_url,
+                    provider="cli-proxy",
+                    relevance_threshold=threshold,
+                    batch_size=batch_size
+                )
+
+                # 检测 API 是否在线
+                print("[AI] 正在检测 CLI Proxy 连接状态...")
+                is_online, status_msg = self.llm_filter.check_api_connection()
+
+                if is_online:
+                    print(f"[AI] ✓ {status_msg}")
+                    print(f"[AI] CLI Proxy 智能筛选已启用 (阈值: {threshold})")
+                else:
+                    print(f"[警告] ✗ {status_msg}")
+                    print("[警告] CLI Proxy 不在线，将禁用AI筛选功能")
+                    print(f"  请确保 cli-proxy-api.exe 正在运行，并监听 {proxy_url}")
+                    self.use_llm = False
+                    self.llm_filter = None
+
+                return
+
+            except Exception as e:
+                print(f"[错误] CLI Proxy 筛选器初始化失败: {e}")
+                self.use_llm = False
+                return
+
+        # 使用在线 API (NVIDIA/OpenAI)
         if not OPENAI_AVAILABLE:
             print("[警告] openai未安装，禁用LLM筛选")
             self.use_llm = False
             return
-        
+
         # 从环境变量读取配置
         api_key = os.getenv("NVIDIA_API_KEY") or os.getenv("OPENAI_API_KEY")
-        provider = os.getenv("LLM_PROVIDER", "auto")
-        model = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
-        threshold = float(os.getenv("RELEVANCE_THRESHOLD", "0.4"))
-        
+
         if not api_key:
             print("[警告] 未找到API Key (NVIDIA_API_KEY 或 OPENAI_API_KEY)，禁用LLM筛选")
             self.use_llm = False
@@ -628,7 +719,8 @@ class NewsBankAIDownloader:
                 api_key=api_key,
                 model=model,
                 provider=provider,
-                relevance_threshold=threshold
+                relevance_threshold=threshold,
+                batch_size=batch_size
             )
             
             # 检测 API 是否在线
@@ -893,6 +985,7 @@ class NewsBankAIDownloader:
         print("输入 'all' 下载所有文章")
         print("输入 'high' 下载高相关度文章（AI评分 ≥ 阈值）")
         print("输入 'quality' 下载所有优质文章（预览>30词）")
+        print("输入 'threshold' 修改相关性分数阈值")
         print("输入 'q' 退出")
         print("-" * 70)
         
@@ -915,6 +1008,28 @@ class NewsBankAIDownloader:
                     quality_articles = [a for a in articles if a.word_count >= self.min_preview_words]
                     print(f"已选择 {len(quality_articles)} 篇优质文章")
                     return quality_articles
+                
+                if user_input == 'threshold':
+                    # 修改相关性阈值
+                    print(f"\n当前相关性阈值: {self.relevance_threshold}")
+                    print(f"当前文章总数: {len(articles)}")
+                    current_high = sum(1 for a in articles if a.relevance_score >= self.relevance_threshold)
+                    print(f"当前≥阈值的文章数: {current_high}")
+                    
+                    new_threshold_input = input(f"\n请输入新的阈值 (0.0-1.0，回车保持 {self.relevance_threshold}): ").strip()
+                    if new_threshold_input:
+                        try:
+                            new_threshold = float(new_threshold_input)
+                            if 0.0 <= new_threshold <= 1.0:
+                                self.relevance_threshold = new_threshold
+                                print(f"阈值已更新为: {self.relevance_threshold}")
+                                # 重新显示文章列表
+                                self.display_article_list(articles, show_scores=self.use_llm)
+                            else:
+                                print("阈值必须在0.0-1.0之间")
+                        except ValueError:
+                            print("输入无效，阈值保持不变")
+                    continue
                 
                 # 解析选择
                 selected_indices = set()
@@ -1117,15 +1232,35 @@ Full Text:
                 
                 self.stats["user_selected"] = len(selected)
                 
-                # 确认下载
+                # 确认下载并设置下载数量
                 print("\n" + "-" * 70)
-                final_confirm = input(f"确认下载 {len(selected)} 篇文章? (y/n): ").strip().lower()
+                print(f"当前下载数量限制: {self.download_limit} 篇")
+                print(f"已选择文章数: {len(selected)} 篇")
+                
+                # 询问是否修改下载数量
+                limit_input = input(f"请输入要下载的文章数量 (1-{len(selected)}，回车使用当前设置 {min(self.download_limit, len(selected))}): ").strip()
+                if limit_input:
+                    try:
+                        new_limit = int(limit_input)
+                        if 1 <= new_limit <= len(selected):
+                            download_count = new_limit
+                            print(f"将下载前 {download_count} 篇文章")
+                        else:
+                            print(f"输入超出范围，将下载前 {min(self.download_limit, len(selected))} 篇")
+                            download_count = min(self.download_limit, len(selected))
+                    except ValueError:
+                        print(f"输入无效，将下载前 {min(self.download_limit, len(selected))} 篇")
+                        download_count = min(self.download_limit, len(selected))
+                else:
+                    download_count = min(self.download_limit, len(selected))
+                
+                final_confirm = input(f"\n确认下载 {download_count} 篇文章? (y/n): ").strip().lower()
                 if final_confirm != 'y':
                     print("已取消下载")
                     return
                 
-                # 下载文章
-                downloaded = await self.download_articles(page, selected, url)
+                # 下载文章（根据用户设置的数量）
+                downloaded = await self.download_articles(page, selected[:download_count], url)
                 
                 # 最终报告
                 print("\n" + "=" * 80)
@@ -1218,6 +1353,7 @@ def main():
     LLM_PROVIDER=auto            # 自动检测提供商
     LLM_MODEL=z-ai/glm4.7        # 模型选择
     RELEVANCE_THRESHOLD=0.4      # 相关性阈值
+    LLM_BATCH_SIZE=20            # 每批处理文章数（默认10，DeepSeek建议20-30）
 
 流程:
     1. 输入NewsBank搜索URL
