@@ -1,0 +1,29 @@
+# Playwright 浏览器自动化
+playwright>=1.40.0
+
+# 异步 SQLite 支持
+aiosqlite>=0.19.0
+
+# 配置管理
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# 重试机制
+tenacity>=8.2.0
+
+# 日志和监控
+loguru>=0.7.0
+
+# 数据处理
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# 异步 HTTP 客户端
+aiohttp>=3.9.0
+
+# YAML 配置支持（可选）
+pyyaml>=6.0
+
+# 类型检查
+typing-extensions>=4.8.0
