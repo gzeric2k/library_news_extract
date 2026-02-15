@@ -420,7 +420,7 @@ class LLMArticleFilter:
                 return False, f"API 检测失败: {str(e)[:50]}"
     
     async def filter_articles_batch(self, articles: List[ArticleInfo], 
-                                    batch_size: int = 5) -> List[ArticleInfo]:
+                                    batch_size: int = 10) -> List[ArticleInfo]:
         """
         批量使用LLM筛选文章
         
@@ -466,9 +466,9 @@ class LLMArticleFilter:
     
     async def _evaluate_batch(self, articles: List[ArticleInfo]) -> List[ArticleInfo]:
         """评估一批文章"""
-        # 构建提示
+        # 构建提示 - 发送完整的标题和预览内容
         articles_text = "\n\n".join([
-            f"[{i+1}] 标题: {a.title}\n    预览: {a.preview[:200]}..."
+            f"[{i+1}] 标题: {a.title}\n    预览: {a.preview}"
             for i, a in enumerate(articles)
         ])
         
@@ -498,7 +498,7 @@ class LLMArticleFilter:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_tokens=500
+                max_tokens=800
             )
             
             content = response.choices[0].message.content or ""
