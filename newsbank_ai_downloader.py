@@ -41,7 +41,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
-from urllib.parse import urlparse, parse_qs, urljoin, unquote
+from urllib.parse import urlparse, parse_qs, urljoin, unquote, urlencode, parse_qsl
 from dataclasses import dataclass, asdict
 
 from playwright.async_api import async_playwright
@@ -654,6 +654,34 @@ class NewsBankAIDownloader:
             print(f"[错误] 登录失败: {e}")
             return False
     
+    def _build_page_url(self, base_url: str, page_num: int, max_results: int = 20) -> str:
+        """构建分页URL
+        
+        Args:
+            base_url: 基础URL
+            page_num: 页码（从1开始）
+            max_results: 每页结果数
+        
+        Returns:
+            带分页参数的URL
+        """
+        parsed = urlparse(base_url)
+        query_params = dict(parse_qsl(parsed.query))
+        
+        # 计算offset (第一页offset=0, 第二页offset=20或maxresults)
+        offset = (page_num - 1) * max_results
+        
+        # 更新分页参数
+        query_params['offset'] = str(offset)
+        query_params['maxresults'] = str(max_results)
+        query_params['page'] = str(page_num - 1)  # page参数从0开始
+        
+        # 重新构建URL
+        new_query = urlencode(query_params, doseq=True)
+        new_url = parsed._replace(query=new_query).geturl()
+        
+        return new_url
+    
     async def scan_articles(self, page, url: str) -> List[ArticleInfo]:
         """扫描文章列表"""
         print("\n" + "=" * 70)
@@ -661,20 +689,24 @@ class NewsBankAIDownloader:
         print("=" * 70)
         
         articles = []
+        current_url = url
+        
+        # 从URL解析maxresults，默认20
+        parsed = urlparse(url)
+        query_params = dict(parse_qsl(parsed.query))
+        max_results = int(query_params.get('maxresults', 20))
         
         for page_num in range(1, self.max_pages + 1):
             print(f"\n[Page] 第 {page_num} 页")
             
             if page_num > 1:
-                # 点击下一页
-                next_button = await page.query_selector('a:has-text("Next")')
-                if not next_button or await next_button.is_disabled():
-                    print("  无更多页面")
-                    break
+                # 构建下一页的URL
+                current_url = self._build_page_url(url, page_num, max_results)
+                print(f"  访问: {current_url[:100]}...")
                 
-                await next_button.click()
-                await page.wait_for_load_state("networkidle")
-                await asyncio.sleep(1)
+                # 直接访问下一页URL
+                await page.goto(current_url, wait_until="networkidle", timeout=60000)
+                await asyncio.sleep(2)
             
             # 提取文章
             article_elements = await page.query_selector_all('article.search-hits__hit')
