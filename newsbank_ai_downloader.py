@@ -341,13 +341,19 @@ class LLMArticleFilter:
     
     def _initialize_client(self, api_key: Optional[str], base_url: Optional[str]):
         """初始化API客户端"""
+        if not OPENAI_AVAILABLE:
+            raise ImportError("openai 包未安装，无法初始化客户端")
+        
+        # 使用类型忽略来避免 LSP 错误
+        import openai as oai  # type: ignore
+        
         if self.provider == "nvidia":
-            return openai.OpenAI(
+            return oai.OpenAI(
                 api_key=api_key,
                 base_url=base_url or NVIDIA_BASE_URL
             )
         else:
-            return openai.OpenAI(api_key=api_key)
+            return oai.OpenAI(api_key=api_key)
     
     def _get_model_name(self, model: str) -> str:
         """获取正确的模型名称"""
@@ -367,6 +373,51 @@ class LLMArticleFilter:
         """设置目标关键词"""
         self.target_keywords = keywords
         print(f"[LLM] 目标关键词: {', '.join(keywords)}")
+    
+    def check_api_connection(self) -> Tuple[bool, str]:
+        """
+        检测 LLM API 是否在线可用
+        
+        Returns:
+            (是否在线, 状态信息)
+        """
+        if not OPENAI_AVAILABLE:
+            return False, "openai 包未安装"
+        
+        try:
+            # 发送一个简单的测试请求
+            from typing import Any
+            test_messages: List[Any] = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Say 'API is working' and nothing else."}
+            ]
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=test_messages,
+                temperature=0.1,
+                max_tokens=20
+            )
+            
+            if response and response.choices and len(response.choices) > 0:
+                content = response.choices[0].message.content
+                if content and len(content) > 0:
+                    return True, f"API 在线正常 (响应: {content[:30]}...)"
+                else:
+                    return True, "API 在线但响应内容为空"
+            else:
+                return False, "API 响应格式异常"
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "authentication" in error_msg or "api key" in error_msg:
+                return False, f"API Key 认证失败: {str(e)[:50]}"
+            elif "rate limit" in error_msg or "too many requests" in error_msg:
+                return False, f"API 速率限制: {str(e)[:50]}"
+            elif "connection" in error_msg or "timeout" in error_msg:
+                return False, f"API 连接失败: {str(e)[:50]}"
+            else:
+                return False, f"API 检测失败: {str(e)[:50]}"
     
     async def filter_articles_batch(self, articles: List[ArticleInfo], 
                                     batch_size: int = 5) -> List[ArticleInfo]:
@@ -579,7 +630,20 @@ class NewsBankAIDownloader:
                 provider=provider,
                 relevance_threshold=threshold
             )
-            print(f"[AI] LLM智能筛选已启用 (阈值: {threshold})")
+            
+            # 检测 API 是否在线
+            print("[AI] 正在检测 LLM API 连接状态...")
+            is_online, status_msg = self.llm_filter.check_api_connection()
+            
+            if is_online:
+                print(f"[AI] ✓ {status_msg}")
+                print(f"[AI] LLM智能筛选已启用 (阈值: {threshold})")
+            else:
+                print(f"[警告] ✗ {status_msg}")
+                print("[警告] LLM API 不在线，将禁用AI筛选功能")
+                self.use_llm = False
+                self.llm_filter = None
+                
         except Exception as e:
             print(f"[错误] LLM筛选器初始化失败: {e}")
             self.use_llm = False
