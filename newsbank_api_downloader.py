@@ -461,10 +461,12 @@ class NewsBankAPIDownloader:
                             captured_payloads.append({
                                 'url': url,
                                 'post_data': post_data,
-                                'timestamp': time.time()
+                                'timestamp': time.time(),
+                                'length': len(post_data)
                             })
                             print(f"  [捕获] 捕获到请求: {request.method} {url.split('/')[-1]}")
-                            print(f"  [捕获] Payload: {post_data[:150]}...")
+                            print(f"  [捕获] Payload长度: {len(post_data)} 字符")
+                            print(f"  [捕获] Payload预览: {post_data[:200]}...")
                 except Exception as e:
                     pass  # 静默处理，避免过多输出
         
@@ -477,12 +479,27 @@ class NewsBankAPIDownloader:
             await asyncio.sleep(1)
             if captured_payloads:
                 print(f"  [信息] 已捕获 {len(captured_payloads)} 个相关请求")
+                # 打印每个捕获的payload长度
+                for idx, p in enumerate(captured_payloads):
+                    print(f"    [{idx+1}] 长度: {p['length']} 字符")
         
         if captured_payloads:
             # 使用最后一个包含docs=的请求（通常是最新的）
             # 因为选中操作会触发多次请求
             last_payload = captured_payloads[-1]['post_data']
-            print(f"  [成功] 使用最后一个请求的payload ({len(last_payload)} 字符)")
+            payload_length = len(last_payload)
+            print(f"  [成功] 使用最后一个请求的payload ({payload_length} 字符)")
+            
+            # 检查payload是否可能被截断
+            if payload_length > 5000:
+                print(f"  [警告] Payload较长({payload_length}字符)，检查完整性...")
+                # 检查是否有未闭合的括号
+                bracket_count = last_payload.count('[') - last_payload.count(']')
+                brace_count = last_payload.count('{') - last_payload.count('}')
+                print(f"  [检查] 括号平衡: [ {bracket_count}, {{ {brace_count}")
+                if bracket_count != 0 or brace_count != 0:
+                    print(f"  [警告] Payload可能被截断！")
+            
             return last_payload
         else:
             print(f"  [警告] 未捕获到包含docs=的payload")
@@ -496,11 +513,25 @@ class NewsBankAPIDownloader:
         [{"docref":"news/xxx","cache_type":"AWGLNB","size":xxx,"pbi":"xxx","title":"xxx","product":"AWGLNB"}, ...]
         """
         try:
-            # payload可能是URL编码的
-            decoded = unquote(payload_str)
+            # payload可能是URL编码的，可能需要多次解码
+            decoded = payload_str
+            
+            # 尝试多次解码，直到不再是URL编码格式
+            max_iterations = 3
+            for i in range(max_iterations):
+                try:
+                    # 检查是否包含URL编码（%XX格式）
+                    if '%' in decoded:
+                        decoded = unquote(decoded)
+                        print(f"  [解码] 第{i+1}次解码后: {decoded[:200]}...")
+                    else:
+                        break
+                except Exception:
+                    break
             
             # 打印完整的解码后的payload用于调试
             print(f"  [调试] 完整payload: {decoded[:500]}...")
+            print(f"  [调试] Payload总长度: {len(decoded)} 字符")
             
             # 提取 docs= 后面的JSON数组
             if 'docs=' in decoded:
@@ -510,25 +541,71 @@ class NewsBankAPIDownloader:
                 if '&' in json_part:
                     json_part = json_part.split('&')[0]
                 
+                # 清理可能的空白字符
+                json_part = json_part.strip()
+                
+                print(f"  [调试] JSON部分长度: {len(json_part)} 字符")
+                print(f"  [调试] JSON部分前200字符: {json_part[:200]}...")
+                
+                # 检查JSON是否被截断
+                if json_part.count('[') > json_part.count(']'):
+                    print(f"  [警告] JSON数组可能未正确关闭，尝试修复...")
+                    # 尝试补全缺失的 ]
+                    json_part = json_part + ']'
+                
                 # 解析JSON
-                articles = json.loads(json_part)
-                print(f"  [解析] 从payload中提取到 {len(articles)} 篇文章")
-                
-                # 打印文章标题用于调试
-                for i, art in enumerate(articles[:5]):
-                    print(f"    [{i+1}] {art.get('title', 'N/A')[:40]}")
-                    print(f"        docref: {art.get('docref', 'N/A')}")
-                
-                return articles
-            else:
-                # 尝试直接解析
+                try:
+                    articles = json.loads(json_part)
+                    print(f"  [解析] 从payload中提取到 {len(articles)} 篇文章")
+                    
+                    # 打印文章标题用于调试
+                    for i, art in enumerate(articles[:5]):
+                        print(f"    [{i+1}] {art.get('title', 'N/A')[:40]}")
+                        print(f"        docref: {art.get('docref', 'N/A')}")
+                    
+                    return articles
+                except json.JSONDecodeError as json_err:
+                    print(f"  [解析] JSON解析失败: {json_err}")
+                    # 尝试更详细的错误定位
+                    print(f"  [调试] 错误位置: char {json_err.pos}, line {json_err.lineno}, col {json_err.colno}")
+                    # 打印错误位置前后的字符
+                    if json_err.pos and json_err.pos < len(json_part):
+                        start = max(0, json_err.pos - 50)
+                        end = min(len(json_part), json_err.pos + 50)
+                        print(f"  [调试] 错误位置附近: ...{json_part[start:end]}...")
+                    
+                    # 如果JSON被截断，尝试只解析已有的部分
+                    if json_err.pos:
+                        truncated_json = json_part[:json_err.pos]
+                        print(f"  [备选] 尝试解析截断的JSON部分...")
+                        try:
+                            # 尝试找到最后一个完整的对象
+                            # 通过找到最后一个 } 来判断
+                            last_brace = truncated_json.rfind('}')
+                            if last_brace > 0:
+                                truncated_json = truncated_json[:last_brace+1]
+                                truncated_json = '[' + truncated_json + ']'
+                                articles = json.loads(truncated_json)
+                                print(f"  [解析] 从截断payload中提取到 {len(articles)} 篇文章")
+                                return articles
+                        except:
+                            pass
+                    raise
+            
+            elif decoded.startswith('['):
+                # 尝试直接解析（没有docs=前缀）
                 articles = json.loads(decoded)
                 return articles
+            else:
+                print(f"  [警告] payload中未找到docs=参数")
+                print(f"  [调试] payload内容: {decoded[:500]}...")
+                return None
                 
         except Exception as e:
             print(f"  [解析] 解析payload失败: {e}")
             # 打印原始payload用于调试
             print(f"  [调试] 原始payload: {payload_str[:300]}...")
+            print(f"  [调试] 原始payload长度: {len(payload_str)} 字符")
             return None
     
     async def _save_article_metadata_to_json(self, article_metadata: List[Dict], keyword: str) -> Path:
@@ -1950,6 +2027,50 @@ class NewsBankAPIDownloader:
             traceback.print_exc()
             return None
     
+    async def remove_selection(self, page: Page, p_param: str = "AWGLNB") -> bool:
+        """
+        清除当前的文章选择
+        
+        调用 nb-cache-doc/js/remove API 来清除所有已选择的文章
+        """
+        print("\n[清除选择]")
+        print("-" * 40)
+        
+        remove_url = "https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/nb-cache-doc/js/remove"
+        
+        # 用户确认的payload格式
+        payload = f"docrefs=ALL&p={p_param}"
+        
+        print(f"  [请求] POST nb-cache-doc/js/remove")
+        print(f"  [Payload] {payload}")
+        
+        try:
+            # 使用Playwright发送请求
+            api_response = await page.context.request.post(
+                remove_url,
+                data=payload,
+                headers={
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Referer': page.url
+                }
+            )
+            
+            response_body = await api_response.text()
+            
+            if api_response.status == 200:
+                print(f"  [成功] 清除选择成功")
+                return True
+            else:
+                print(f"  [警告] 清除选择失败 (状态: {api_response.status})")
+                print(f"  [调试] 响应: {response_body[:200]}...")
+                return False
+                
+        except Exception as e:
+            print(f"  [错误] 清除选择请求失败: {e}")
+            return False
+    
     async def fetch_articles_via_api(self, 
                                      page: Page, 
                                      base_url: str,
@@ -1968,6 +2089,7 @@ class NewsBankAPIDownloader:
         print(f"  [调试] 当前URL: {page.url[:100]}...")
         
         articles = []
+        p_param = "AWGLNB"  # 默认值
         
         try:
             # 获取页面HTML以提取文章ID
@@ -2028,6 +2150,9 @@ class NewsBankAPIDownloader:
                         articles = self._parse_api_response(body, page_num)
                         print(f"  [成功] 从API响应解析到 {len(articles)} 篇文章")
                 
+                # 清除选择，避免累积导致payload过长
+                await self.remove_selection(page, p_param)
+                
                 return articles
             
             # 如果完全没有获取到文章元数据，回退到原有方法
@@ -2059,12 +2184,20 @@ class NewsBankAPIDownloader:
                 print("  [备选] 直接解析页面内容...")
                 articles = await self._parse_articles_from_page(page, page_num)
             
+            # 清除选择，避免累积导致payload过长
+            await self.remove_selection(page, p_param)
+            
             return articles
             
         except Exception as e:
             print(f"  [错误] API请求失败: {e}")
             import traceback
             traceback.print_exc()
+            # 失败时也尝试清除选择
+            try:
+                await self.remove_selection(page, p_param)
+            except:
+                await self.remove_selection(page, "AWGLNB")  # 使用默认值
             # 失败时回退到页面解析
             return await self._parse_articles_from_page(page, page_num)
     
