@@ -47,6 +47,7 @@ cookies/
 # Output directories (generated content)
 articles/
 articles*/
+articles_ai/
 articles_full/
 articles_smart/
 *.db

@@ -456,18 +456,34 @@ class NewsBankAPIDownloader:
         Returns:
             保存的文件路径
         """
+        # 筛选处理：只保留 docref 以 "news/" 开头的记录
+        filtered_metadata = [
+            art for art in article_metadata 
+            if art.get('docref', '').startswith('news/')
+        ]
+        
+        if len(filtered_metadata) < len(article_metadata):
+            print(f"  [筛选] 过滤掉 {len(article_metadata) - len(filtered_metadata)} 条非 news/ 开头的记录")
+            print(f"  [筛选] 保留 {len(filtered_metadata)} 条记录")
+        
+        # 如果筛选后没有有效记录，发出警告
+        if not filtered_metadata:
+            print(f"  [警告] 筛选后没有有效记录，请检查 docref 格式")
+            filtered_metadata = article_metadata  # 保留原始数据以便调试
+        
         # 生成文件名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_keyword = re.sub(r'[^\w\s-]', '', keyword).replace(' ', '_')[:30]
-        filename = f"article_metadata_{safe_keyword}_{timestamp}.json"
+        filename = f"article_{safe_keyword}_{timestamp}.json"
         filepath = self.output_dir / filename
         
         # 准备保存的数据
         save_data = {
             "search_keyword": keyword,
             "extracted_at": datetime.now().isoformat(),
-            "total_articles": len(article_metadata),
-            "articles": article_metadata
+            "total_articles": len(filtered_metadata),
+            "original_count": len(article_metadata),  # 记录原始数量
+            "articles": filtered_metadata
         }
         
         # 保存到JSON文件
@@ -2308,10 +2324,31 @@ Full Text:
                 # 显示文章列表
                 self.display_articles(self.articles)
                 
-                # 保存文章列表到JSON
+                # 保存文章列表到JSON（带筛选）
+                articles_to_save = self.articles
+                
+                # 尝试从文章中提取 docref 信息进行筛选
+                # ArticleInfo 有 article_id 字段，可以构造 docref
+                articles_with_docref = []
+                for a in self.articles:
+                    if a.article_id:
+                        # 构造 docref
+                        docref = f"news/{a.article_id}"
+                        articles_with_docref.append((a, docref))
+                
+                if articles_with_docref:
+                    # 筛选只保留 docref 以 "news/" 开头的
+                    filtered_articles = [a for a, docref in articles_with_docref if docref.startswith('news/')]
+                    removed_count = len(self.articles) - len(filtered_articles)
+                    
+                    if removed_count > 0:
+                        print(f"\n[筛选] 过滤掉 {removed_count} 条非 news/ 开头的记录")
+                        print(f"[筛选] 保留 {len(filtered_articles)} 条记录")
+                        articles_to_save = filtered_articles
+                
                 json_path = self.output_dir / f"article_list_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
                 with open(json_path, 'w', encoding='utf-8') as f:
-                    json.dump([a.to_dict() for a in self.articles], f, indent=2, ensure_ascii=False)
+                    json.dump([a.to_dict() for a in articles_to_save], f, indent=2, ensure_ascii=False)
                 print(f"\n文章列表已保存: {json_path}")
                 
                 # 下载文章
