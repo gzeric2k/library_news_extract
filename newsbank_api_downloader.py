@@ -538,8 +538,27 @@ class NewsBankAPIDownloader:
                 json_part = decoded.split('docs=')[1]
                 
                 # 可能还包含其他参数，用 & 分隔
+                # 但要注意JSON内部可能有 &amp; (HTML实体) 解码后的 &
+                # 需要智能找到真正的参数分隔位置
                 if '&' in json_part:
-                    json_part = json_part.split('&')[0]
+                    # 尝试找到JSON数组的结束位置（最后一个]）
+                    # 通过计算括号的平衡来确定
+                    last_bracket = json_part.rfind(']')
+                    if last_bracket > 0:
+                        # 检查后面是否还有其他参数
+                        remaining = json_part[last_bracket+1:]
+                        if remaining and '&' in remaining:
+                            # 确实有其他参数，只取到]为止
+                            json_part = json_part[:last_bracket+1]
+                            print(f"  [调试] 智能截断到最后一个]，位置: {last_bracket}")
+                        else:
+                            # 后面没有&，说明没有其他参数了
+                            json_part = json_part[:last_bracket+1]
+                            print(f"  [调试] 无后续参数，使用完整JSON，位置: {last_bracket}")
+                    else:
+                        # 没有找到]，用原来的方式
+                        print(f"  [调试] 未找到]，使用原方式")
+                        json_part = json_part.split('&')[0]
                 
                 # 清理可能的空白字符
                 json_part = json_part.strip()
@@ -547,11 +566,18 @@ class NewsBankAPIDownloader:
                 print(f"  [调试] JSON部分长度: {len(json_part)} 字符")
                 print(f"  [调试] JSON部分前200字符: {json_part[:200]}...")
                 
-                # 检查JSON是否被截断
-                if json_part.count('[') > json_part.count(']'):
+                # 检查JSON是否被截断 - 更详细的检查
+                bracket_diff = json_part.count('[') - json_part.count(']')
+                brace_diff = json_part.count('{') - json_part.count('}')
+                print(f"  [调试] 括号平衡: [ {bracket_diff}, {{ {brace_diff}")
+                
+                if bracket_diff > 0 or brace_diff > 0:
                     print(f"  [警告] JSON数组可能未正确关闭，尝试修复...")
                     # 尝试补全缺失的 ]
-                    json_part = json_part + ']'
+                    if bracket_diff > 0:
+                        json_part = json_part + ']' * bracket_diff
+                    if brace_diff > 0:
+                        json_part = json_part + '}' * brace_diff
                 
                 # 解析JSON
                 try:
@@ -2201,6 +2227,103 @@ class NewsBankAPIDownloader:
             # 失败时回退到页面解析
             return await self._parse_articles_from_page(page, page_num)
     
+    async def fetch_page_metadata_only(self, page: Page, page_num: int = 1) -> Optional[List[Dict]]:
+        """
+        只获取页面元数据，不下载文章内容
+        
+        新流程步骤2：选中→获取元数据→返回（翻页由调用者处理）
+        
+        Returns:
+            文章元数据列表，如果失败返回None
+        """
+        print(f"\n[第 {page_num} 页] 获取元数据...")
+        print("-" * 40)
+        
+        article_metadata = None
+        
+        # 设置网络请求监听器（在选中之前）
+        captured_payloads = []
+        
+        async def handle_request(request):
+            url = request.url
+            if "nb-cache-doc" in url:
+                try:
+                    post_data = request.post_data
+                    if post_data:
+                        if isinstance(post_data, bytes):
+                            post_data = post_data.decode('utf-8')
+                        if 'docs=' in post_data:
+                            captured_payloads.append(post_data)
+                except:
+                    pass
+        
+        page.on("request", handle_request)
+        
+        try:
+            # 步骤1: 选中当前页所有文章
+            print(f"  [选中] 点击全选复选框...")
+            select_success = await self.select_all_articles(page)
+            if not select_success:
+                print(f"  [警告] 选择文章可能未成功，继续...")
+            
+            # 等待网络请求完成
+            print(f"  [等待] 等待网络请求...")
+            for i in range(5):
+                await asyncio.sleep(0.5)
+                if captured_payloads:
+                    print(f"  [成功] 捕获到 {len(captured_payloads)} 个请求")
+                    break
+            
+            # 步骤2: 解析捕获的payload获取元数据
+            if captured_payloads:
+                payload = captured_payloads[-1]  # 使用最后一个
+                article_metadata = self._parse_captured_payload(payload)
+                if article_metadata:
+                    print(f"  [成功] 从捕获的payload解析到 {len(article_metadata)} 篇文章")
+            
+            # 如果没有捕获到，从页面提取
+            if not article_metadata:
+                print(f"  [未捕获] 未捕获到payload，从页面提取...")
+                article_metadata = await self._extract_selected_articles_metadata(page)
+            
+            # 补充 preview（如果从payload解析的没有preview）
+            if article_metadata:
+                has_preview = any(art.get('preview') for art in article_metadata)
+                if not has_preview:
+                    print(f"  [补充] 从HTML提取preview...")
+                    html_content = await page.content()
+                    html_articles = self._extract_preview_from_html(html_content)
+                    if html_articles:
+                        for art in article_metadata:
+                            docref = art.get('docref', '')
+                            for html_art in html_articles:
+                                if html_art.get('docref') == docref:
+                                    art['preview'] = html_art.get('preview', '')
+                                    break
+                        print(f"  [补充] 为 {len(article_metadata)} 篇文章补充了preview")
+            
+            if not article_metadata:
+                print(f"  [第 {page_num}] 未获取到元数据")
+                return None
+            
+            # 步骤3: 筛选 docref 以 "news/" 开头的记录
+            filtered_by_docref = [
+                art for art in article_metadata 
+                if art.get('docref', '').startswith('news/')
+            ]
+            
+            if len(filtered_by_docref) < len(article_metadata):
+                print(f"  [预筛选] 过滤掉 {len(article_metadata) - len(filtered_by_docref)} 条非 news/ 记录")
+            
+            print(f"  [完成] 获取到 {len(filtered_by_docref)} 篇元数据")
+            return filtered_by_docref
+            
+        except Exception as e:
+            print(f"  [错误] 获取元数据失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     async def _parse_articles_from_page(self, page: Page, page_num: int) -> List[ArticleInfo]:
         """从页面HTML中解析文章列表"""
         articles = []
@@ -3045,6 +3168,7 @@ Full Text:
                 all_metadata = []
                 
                 # 初始化 LLM 客户端（如果启用）
+                # 新流程：先收集所有页元数据，最后统一筛选
                 llm_client = None
                 llm_model = None
                 use_llm_filter = os.getenv("LLM_FILTER_ENABLED", "").lower() == "true"
@@ -3054,145 +3178,36 @@ Full Text:
                     llm_result = self._init_llm_client()
                     if llm_result:
                         llm_client, llm_model = llm_result
-                        print(f"[LLM] 每页筛选已启用，阈值: {llm_threshold}")
+                        print(f"[LLM] 已启用，将在收集完所有页后统一筛选，阈值: {llm_threshold}")
                     else:
-                        print("[警告] LLM 初始化失败，将不使用每页筛选")
+                        print("[警告] LLM 初始化失败，将不使用筛选")
                 
-                # 逐页处理
+                # ========== 新流程：逐页获取元数据 ==========
                 for page_num in range(1, self.max_pages + 1):
-                    print(f"\n[第 {page_num} 页] 提取元数据...")
-                    
-                    # 先设置网络请求监听器（在选中之前！）
-                    print(f"  [设置] 设置网络请求监听器...")
-                    captured_payloads = []
-                    
-                    async def handle_request(request):
-                        url = request.url
-                        if "nb-cache-doc" in url:
-                            try:
-                                post_data = request.post_data
-                                if post_data:
-                                    if isinstance(post_data, bytes):
-                                        post_data = post_data.decode('utf-8')
-                                    if 'docs=' in post_data:
-                                        captured_payloads.append(post_data)
-                                        print(f"  [捕获] 捕获到 nb-cache-doc 请求，payload长度: {len(post_data)}")
-                            except:
-                                pass
-                    
-                    page.on("request", handle_request)
-                    
-                    # 选中当前页所有文章
-                    print(f"  [选中] 点击全选复选框...")
-                    select_success = await self.select_all_articles(page)
-                    if not select_success:
-                        print(f"  [警告] 选文章可能未成功，继续...")
-                    
-                    # 等待网络请求完成
-                    print(f"  [等待] 等待网络请求...")
-                    for i in range(5):
-                        await asyncio.sleep(0.5)
-                        if captured_payloads:
-                            print(f"  [成功] 捕获到 {len(captured_payloads)} 个请求")
-                            break
-                    
-                    # 解析捕获的payload
-                    article_metadata = None
-                    if captured_payloads:
-                        payload = captured_payloads[-1]  # 使用最后一个
-                        article_metadata = self._parse_captured_payload(payload)
-                        if article_metadata:
-                            print(f"  [成功] 从捕获的payload解析到 {len(article_metadata)} 篇文章")
-                    
-                    # 如果没有捕获到，从页面提取
-                    if not article_metadata:
-                        print(f"  [第 {page_num}] 未捕获到payload，从页面提取...")
-                        article_metadata = await self._extract_selected_articles_metadata(page)
-                    
-                    # 补充 preview（如果从payload解析的没有preview）
-                    if article_metadata:
-                        # 检查是否有preview
-                        has_preview = any(art.get('preview') for art in article_metadata)
-                        if not has_preview:
-                            print(f"  [补充] 从HTML提取preview...")
-                            html_content = await page.content()
-                            html_articles = self._extract_preview_from_html(html_content)
-                            if html_articles:
-                                # 通过 docref 匹配补充 preview
-                                for art in article_metadata:
-                                    docref = art.get('docref', '')
-                                    for html_art in html_articles:
-                                        if html_art.get('docref') == docref:
-                                            art['preview'] = html_art.get('preview', '')
-                                            break
-                                print(f"  [补充] 为 {len(article_metadata)} 篇文章补充了preview")
+                    # 使用新函数获取元数据（不下载内容）
+                    article_metadata = await self.fetch_page_metadata_only(page, page_num)
                     
                     if not article_metadata:
-                        print(f"  [第 {page_num}] 未获取到元数据，尝试备选方案...")
-                        # 尝试从页面直接提取
-                        html_content = await page.content()
-                        article_ids = self._extract_article_ids_from_page(html_content)
-                        print(f"  [备选] 从页面提取到 {len(article_ids)} 个文章ID")
-                        
-                        # 初始化为空列表
-                        article_metadata = []
-                        
-                        # 构建简单元数据（需要更多字段）
-                        for doc_id in article_ids:
-                            article_metadata.append({
-                                "docref": f"news/{doc_id}",
-                                "cache_type": "AWGLNB",
-                                "size": 0,
-                                "pbi": "",
-                                "title": f"Article {doc_id}",
-                                "product": "AWGLNB"
-                            })
-                    
-                    if article_metadata:
-                        # 第一步：筛选 docref 以 "news/" 开头的记录
-                        filtered_by_docref = [
-                            art for art in article_metadata 
-                            if art.get('docref', '').startswith('news/')
-                        ]
-                        
-                        if len(filtered_by_docref) < len(article_metadata):
-                            print(f"  [预筛选] 过滤掉 {len(article_metadata) - len(filtered_by_docref)} 条非 news/ 开头的记录")
-                            print(f"  [预筛选] 保留 {len(filtered_by_docref)} 条记录")
-                        
-                        # 使用预筛选后的结果
-                        article_metadata = filtered_by_docref
-                        
-                        # 第二步：每页 LLM 筛选（包含标题+预览）
-                        if llm_client and article_metadata:
-                            # 显示待筛选文章标题
-                            print(f"  [LLM] 正在筛选第 {page_num} 页的 {len(article_metadata)} 篇文章...")
-                            for i, art in enumerate(article_metadata[:5]):
-                                title = art.get('title', 'N/A')[:50]
-                                print(f"      [{i+1}] {title}")
-                            if len(article_metadata) > 5:
-                                print(f"      ... 还有 {len(article_metadata) - 5} 篇")
-                            
-                            article_metadata = await self._filter_single_page_with_llm(
-                                article_metadata, keyword, llm_client, llm_model, llm_threshold
-                            )
-                            if article_metadata:
-                                print(f"  [LLM] 筛选后保留 {len(article_metadata)} 篇相关文章")
-                            else:
-                                print(f"  [LLM] 筛选后无相关文章")
-                        
-                        if article_metadata:
-                            all_metadata.extend(article_metadata)
-                            print(f"  [成功] 获取到 {len(article_metadata)} 篇文章元数据")
-                    else:
                         print(f"  [第 {page_num}] 无法获取元数据，停止")
                         break
                     
-                    # 尝试翻页
+                    # 收集元数据
+                    all_metadata.extend(article_metadata)
+                    print(f"  [累计] 共获取 {len(all_metadata)} 篇元数据")
+                    
+                    # 从URL获取p参数
+                    parsed = urlparse(page.url)
+                    query = parse_qs(parsed.query)
+                    p_param = query.get('p', ['AWGLNB'])[0]
+                    
+                    # 步骤3: remove_selection 清除选择（翻页前）
+                    print(f"  [清除] 翻页前清除选择...")
+                    await self.remove_selection(page, p_param)
+                    
+                    # 步骤4: 翻到下一页
                     if page_num < self.max_pages:
-                        # 查找下一页按钮
                         next_button = await page.query_selector('a[data-testid="pager-next"], button[data-testid="pager-next"], a:has-text("Next"), a:has-text("›")')
                         if next_button:
-                            # 构建下一页URL
                             next_url = self._build_page_url(base_search_url, page_num + 1)
                             print(f"  [翻页] 访问第 {page_num + 1} 页...")
                             await page.goto(next_url, wait_until="networkidle", timeout=60000)
@@ -3206,7 +3221,7 @@ Full Text:
                         print(f"  [信息] 已获取100篇，达到限制")
                         break
                 
-                # 去重
+                # ========== 收集完所有页后进行去重 ==========
                 seen = set()
                 unique_metadata = []
                 for art in all_metadata:
@@ -3216,6 +3231,29 @@ Full Text:
                         unique_metadata.append(art)
                 
                 print(f"\n[完成] 共提取到 {len(unique_metadata)} 篇唯一文章")
+                
+                # ========== 新流程：收集完所有页后，统一进行LLM筛选 ==========
+                if use_llm_filter and llm_client and unique_metadata:
+                    print(f"\n[LLM] 开始统一筛选 {len(unique_metadata)} 篇文章...")
+                    # 批量筛选（每批20篇）
+                    batch_size = 20
+                    filtered_metadata = []
+                    total_batches = (len(unique_metadata) + batch_size - 1) // batch_size
+                    
+                    for batch_idx in range(total_batches):
+                        start_idx = batch_idx * batch_size
+                        end_idx = min(start_idx + batch_size, len(unique_metadata))
+                        batch = unique_metadata[start_idx:end_idx]
+                        
+                        print(f"  [LLM] 筛选批次 {batch_idx + 1}/{total_batches} ({start_idx+1}-{end_idx})...")
+                        
+                        filtered_batch = await self._filter_single_page_with_llm(
+                            batch, keyword, llm_client, llm_model, llm_threshold
+                        )
+                        filtered_metadata.extend(filtered_batch)
+                    
+                    print(f"  [LLM] 筛选完成: {len(filtered_metadata)}/{len(unique_metadata)} 篇相关文章")
+                    unique_metadata = filtered_metadata
                 
                 # 保存到JSON
                 json_path = await self._save_article_metadata_to_json(unique_metadata, keyword)
