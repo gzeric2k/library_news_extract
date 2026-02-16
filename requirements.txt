@@ -9,6 +9,9 @@ pydantic>=2.0.0
 pydantic-settings>=2.0.0
 python-dotenv>=1.0.0
 
+# LLM API 支持 (用于AI筛选功能)
+openai>=1.0.0
+
 # 重试机制
 tenacity>=8.2.0
 

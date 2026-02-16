@@ -1,0 +1,8 @@
+第一页
+https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results?hide_duplicates=2&offset=0&maxresults=60&p=AWGLNB&t=favorite%3AAFRWAFRN%21Australian%20Financial%20Review%20Collection/year%3A2026%7C2024%7C2025%21Multiple%2520Years%2520%283%29&sort=_rank_%3AD&fld-base-0=alltext&val-base-0=treasury%20wine%20penfolds
+
+第二页
+https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results?hide_duplicates=0&offset=63&maxresults=20&page=1&p=AWGLNB&t=favorite%3AAFRWAFRN%21Australian%20Financial%20Review%20Collection/year%3A2026%7C2024%7C2025%21Multiple%2520Years%2520%283%29&sort=_rank_%3AD&fld-base-0=alltext&val-base-0=treasury%20wine%20penfolds
+
+第三页
+https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results?hide_duplicates=0&offset=63&maxresults=20&page=2&p=AWGLNB&t=favorite%3AAFRWAFRN%21Australian%20Financial%20Review%20Collection/year%3A2026%7C2024%7C2025%21Multiple%2520Years%2520%283%29&sort=_rank_%3AD&fld-base-0=alltext&val-base-0=treasury%20wine%20penfolds

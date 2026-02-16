@@ -26,6 +26,7 @@ import argparse
 import json
 import re
 import time
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
@@ -33,6 +34,21 @@ from urllib.parse import urlparse, parse_qs, urljoin, quote, unquote
 from dataclasses import dataclass, asdict
 
 from playwright.async_api import async_playwright, Page, BrowserContext
+
+# 尝试导入 openai（用于LLM调用）
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    print("[警告] openai 包未安装，LLM筛选功能不可用。请运行: pip install openai")
+
+# 尝试加载 .env 文件
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 
 @dataclass
@@ -152,16 +168,18 @@ class NewsBankAPIDownloader:
                          maxresults: int = 200,
                          source: str = "Australian Financial Review Collection",
                          year_from: Optional[int] = None,
-                         year_to: Optional[int] = None) -> str:
+                         year_to: Optional[int] = None,
+                         first_page_maxresults: int = 60) -> str:
         """
         根据关键字构建NewsBank搜索URL
         
         参数:
             keyword: 搜索关键字
-            maxresults: 最大结果数（建议设为20，过大可能被限制）
+            maxresults: 每页结果数（后续页默认20）
             source: 数据源名称
             year_from: 起始年份
             year_to: 结束年份
+            first_page_maxresults: 第一页结果数（默认60）
         
         返回:
             完整的搜索URL
@@ -169,13 +187,14 @@ class NewsBankAPIDownloader:
         # 基础URL
         base_url = "https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results"
         
-        # 参数构建
+        # 参数构建 - 与用户提供的URL一致
+        # sort=_rank_:D 表示按相关性排序
         params = {
             "p": "AWGLNB",
             "hide_duplicates": "2",
             "fld-base-0": "alltext",
-            "sort": "YMD_date:D",
-            "maxresults": str(maxresults),
+            "sort": "_rank_:D",  # 按相关性排序
+            "maxresults": str(first_page_maxresults),  # 第一页使用60
             "val-base-0": keyword,
         }
         
@@ -193,13 +212,49 @@ class NewsBankAPIDownloader:
                 year_filter = f"year:{year_to}"
             params["t"] = f"{params['t']}/{year_filter}"
         
-        # 构建URL
-        query_string = "&".join([f"{k}={quote(v)}" if ' ' in v or '%' in v else f"{k}={v}" for k, v in params.items()])
-        
-        # 特殊处理val-base-0，因为它包含空格
-        query_string = f"p=AWGLNB&hide_duplicates=2&fld-base-0=alltext&sort=YMD_date:D&maxresults={maxresults}&val-base-0={quote(keyword)}&t={quote(params['t'])}"
+        # 构建URL - 使用与参考URL一致的格式（但保留YMD_date:D排序）
+        query_string = f"p=AWGLNB&hide_duplicates=2&fld-base-0=alltext&sort=YMD_date:D&maxresults={params['maxresults']}&val-base-0={quote(params['val-base-0'])}&t={quote(params['t'])}"
         
         return f"{base_url}?{query_string}"
+    
+    def _extract_total_results(self, html_content: str) -> int:
+        """从页面HTML中提取总结果数"""
+        # 匹配格式：<div class="search-hits__meta--total_hits">1,006 Results</div>
+        pattern = r'search-hits__meta--total_hits[^>]*>[\s]*([\d,]+)\s*Results'
+        match = re.search(pattern, html_content)
+        if match:
+            total_str = match.group(1).replace(',', '')
+            try:
+                return int(total_str)
+            except:
+                pass
+        return 0
+    
+    def _build_page_url(self, base_url: str, page_num: int, first_page_maxresults: int = 60, subsequent_maxresults: int = 20) -> str:
+        """
+        构建分页URL
+        
+        根据翻页.txt的规律：
+        - 第1页：offset=0, maxresults=60
+        - 第2页及以后：offset=63, maxresults=20, page=页码-1
+        """
+        if page_num == 1:
+            # 第一页保持原样
+            return base_url
+        else:
+            # 第2页及以后：添加 offset=63, maxresults=20, page=页码-1
+            parsed = urlparse(base_url)
+            query_params = parse_qs(parsed.query)
+            
+            # 设置后续页的参数
+            query_params['offset'] = ['63']
+            query_params['maxresults'] = [str(subsequent_maxresults)]
+            query_params['page'] = [str(page_num - 1)]  # page参数从0开始
+            query_params['hide_duplicates'] = ['0']  # 后续页关闭hide_duplicates
+            
+            # 重新构建URL
+            new_query = "&".join([f"{k}={quote(v[0])}" for k, v in query_params.items()])
+            return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{new_query}"
     
     def _is_search_keyword(self, input_text: str) -> bool:
         """判断输入是搜索关键字还是URL"""
@@ -210,6 +265,37 @@ class NewsBankAPIDownloader:
         if 'apps/news/results' not in input_text:
             return True
         return False
+    
+    def _extract_preview_from_html(self, html_content: str) -> List[Dict]:
+        """从HTML中提取文章的docref和preview"""
+        articles = []
+        
+        # 匹配文章块 - 使用更宽松的模式
+        # 查找包含preview-first-paragraph的文章元素
+        preview_pattern = r'<article[^>]*>.*?preview-first-paragraph.*?</article>'
+        article_matches = re.findall(preview_pattern, html_content, re.DOTALL)
+        
+        for article_html in article_matches:
+            # 提取docref
+            docref_match = re.search(r'data-doc-id="([^"]+)"', article_html)
+            doc_id = docref_match.group(1) if docref_match else ''
+            
+            # 提取preview
+            preview = ""
+            preview_match = re.search(
+                r'preview-first-paragraph[^>]*>([^<]+)',
+                article_html, re.DOTALL
+            )
+            if preview_match:
+                preview = preview_match.group(1).strip()[:200]
+            
+            if doc_id:
+                articles.append({
+                    'docref': f'news/{doc_id}',
+                    'preview': preview
+                })
+        
+        return articles
     
     def _extract_article_ids_from_page(self, html_content: str) -> List[str]:
         """从页面HTML中提取文章ID列表"""
@@ -492,6 +578,381 @@ class NewsBankAPIDownloader:
         
         print(f"  [保存] 元数据已保存到: {filepath}")
         return filepath
+    
+    def _init_llm_client(self, api_key: str = None, model: str = None):
+        """
+        初始化 LLM 客户端
+        
+        Args:
+            api_key: API密钥，默认从环境变量读取
+            model: 模型名称
+            
+        Returns:
+            openai客户端，如果失败返回None
+        """
+        if not OPENAI_AVAILABLE:
+            print("[错误] openai 包未安装")
+            return None
+        
+        # 获取 API Key
+        if not api_key:
+            api_key = os.getenv("NVIDIA_API_KEY") or os.getenv("OPENAI_API_KEY")
+        
+        if not api_key:
+            print("[错误] 未设置 API Key，请设置 NVIDIA_API_KEY 或 OPENAI_API_KEY 环境变量")
+            return None
+        
+        # 检测 provider
+        if api_key.startswith("nvapi-"):
+            provider = "nvidia"
+            base_url = "https://integrate.api.nvidia.com/v1"
+            default_model = "z-ai/glm4.7"  # 推荐中文理解好的模型
+        else:
+            provider = "openai"
+            base_url = None
+            default_model = "gpt-3.5-turbo"
+        
+        # 优先级：命令行参数 > 环境变量 > 默认值
+        if not model:
+            # 尝试从 LLM_MODEL 环境变量读取
+            model = os.getenv("LLM_MODEL")
+        
+        if not model:
+            model = default_model
+        
+        print(f"[LLM] Provider: {provider}")
+        print(f"[LLM] Model: {model}")
+        
+        try:
+            client = openai.OpenAI(
+                api_key=api_key,
+                base_url=base_url
+            )
+            return client, model
+        except Exception as e:
+            print(f"[错误] 初始化 LLM 客户端失败: {e}")
+            return None
+    
+    def _build_relevance_prompt(self, keyword: str, articles: List[Dict]) -> str:
+        """
+        构建相关性判断的 prompt
+        
+        Args:
+            keyword: 搜索关键字
+            articles: 文章列表，包含 title 和 preview
+            
+        Returns:
+            prompt 字符串
+        """
+        # 解码URL编码的标题和预览
+        decoded_articles = []
+        for art in articles:
+            title = art.get('title', '')
+            preview = art.get('preview', '')[:200] if art.get('preview') else ''  # 限制preview长度
+            
+            # URL解码
+            title = title.replace('+', ' ')
+            try:
+                title = unquote(title)
+            except:
+                pass
+            
+            if preview:
+                preview = preview.replace('+', ' ')
+                try:
+                    preview = unquote(preview)
+                except:
+                    pass
+            
+            decoded_articles.append({
+                'title': title[:100],  # 限制标题长度
+                'preview': preview[:200] if preview else ''
+            })
+        
+        # 构建prompt
+        articles_text = "\n".join([
+            f"{i+1}. 标题: {a['title'][:80]}\n   预览: {a['preview'][:150] if a['preview'] else '(无预览)'}"
+            for i, a in enumerate(decoded_articles)
+        ])
+        
+        prompt = f"""你是一个文章相关性判断专家。请判断以下文章是否与搜索关键字"{keyword}"相关。
+
+判断标准：
+- 直接提到关键字或关键字的变体（如公司名，品牌名、缩写）
+- 讨论与关键字相关的事件、产品、服务
+- 与关键字所在行业或领域直接相关
+- 仅仅是通用新闻但没有实质性提到关键字，不算相关
+
+文章列表：
+{articles_text}
+
+请按以下JSON格式返回结果：
+{{
+    "results": [
+        {{"index": 1, "relevant": true/false, "reason": "简短原因"}},
+        ...
+    ]
+}}
+
+只返回JSON，不要有其他内容。"""
+        
+        return prompt
+    
+    async def _filter_articles_by_llm(self, 
+                                       json_file: Path, 
+                                       api_key: str = None, 
+                                       model: str = None,
+                                       threshold: float = 0.5,
+                                       batch_size: int = 10) -> Optional[Path]:
+        """
+        使用 LLM 筛选相关文章
+        
+        Args:
+            json_file: 输入的 JSON 文件路径
+            api_key: API 密钥
+            model: 模型名称
+            threshold: 相关性阈值 (0-1)
+            batch_size: 每批次处理的文章数
+            
+        Returns:
+            筛选后的 JSON 文件路径，失败返回 None
+        """
+        print("\n" + "=" * 60)
+        print("[LLM 智能筛选]")
+        print("=" * 60)
+        
+        if not OPENAI_AVAILABLE:
+            print("[错误] openai 包未安装，无法使用 LLM 筛选")
+            return None
+        
+        # 加载 JSON 文件
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"[错误] 加载 JSON 文件失败: {e}")
+            return None
+        
+        keyword = data.get('search_keyword', '')
+        articles = data.get('articles', [])
+        
+        if not articles:
+            print("[警告] 文章列表为空")
+            return None
+        
+        print(f"[LLM] 搜索关键字: {keyword}")
+        print(f"[LLM] 文章总数: {len(articles)}")
+        print(f"[LLM] 相关性阈值: {threshold}")
+        
+        # 初始化 LLM 客户端
+        llm_result = self._init_llm_client(api_key, model)
+        if not llm_result:
+            return None
+        
+        client, model = llm_result
+        
+        # 提取所有标题
+        titles = [art.get('title', '') for art in articles]
+        
+        # 批量处理
+        relevant_articles = []
+        total_batches = (len(articles) + batch_size - 1) // batch_size
+        
+        print(f"[LLM] 开始筛选，共 {total_batches} 批次...")
+        
+        for batch_idx in range(total_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min(start_idx + batch_size, len(articles))
+            batch_titles = titles[start_idx:end_idx]
+            batch_articles = articles[start_idx:end_idx]
+            
+            print(f"[LLM] 处理批次 {batch_idx + 1}/{total_batches} ({start_idx+1}-{end_idx})...")
+            
+            # 构建 prompt
+            prompt = self._build_relevance_prompt(keyword, batch_titles)
+            
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "你是一个文章相关性判断专家，擅长分析文章标题与搜索主题的相关性。"},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=2000
+                )
+                
+                result_text = response.choices[0].message.content.strip()
+                
+                # 解析 JSON 结果
+                try:
+                    # 尝试提取 JSON
+                    if '```json' in result_text:
+                        result_text = result_text.split('```json')[1].split('```')[0]
+                    elif '```' in result_text:
+                        result_text = result_text.split('```')[1].split('```')[0]
+                    
+                    result_json = json.loads(result_text)
+                    results = result_json.get('results', [])
+                    
+                    # 处理结果
+                    for i, result in enumerate(results):
+                        if result.get('relevant', False):
+                            relevant_articles.append(batch_articles[i])
+                    
+                    # 打印批次结果
+                    relevant_count = sum(1 for r in results if r.get('relevant', False))
+                    print(f"    批次 {batch_idx + 1}: {relevant_count}/{len(batch_articles)} 相关文章")
+                    
+                except json.JSONDecodeError as json_err:
+                    print(f"    [警告] 解析 LLM 响应失败: {json_err}")
+                    # 如果解析失败，默认保留所有文章
+                    relevant_articles.extend(batch_articles)
+                    
+            except Exception as api_err:
+                print(f"    [错误] API 调用失败: {api_err}")
+                # API 失败时默认保留所有文章
+                relevant_articles.extend(batch_articles)
+            
+            # 避免过快请求
+            if batch_idx < total_batches - 1:
+                await asyncio.sleep(1)
+        
+        # 统计结果
+        filtered_count = len(relevant_articles)
+        removed_count = len(articles) - filtered_count
+        
+        print(f"\n[LLM 筛选结果]")
+        print(f"  原始文章: {len(articles)}")
+        print(f"  相关文章: {filtered_count}")
+        print(f"  过滤掉: {removed_count}")
+        print(f"  筛选比例: {filtered_count/len(articles)*100:.1f}%")
+        
+        if not relevant_articles:
+            print("[警告] 没有相关文章被保留")
+            return None
+        
+        # 保存筛选后的结果
+        output_data = {
+            "search_keyword": keyword,
+            "extracted_at": data.get('extracted_at', datetime.now().isoformat()),
+            "llm_filtered_at": datetime.now().isoformat(),
+            "total_articles": filtered_count,
+            "original_count": len(articles),
+            "filter_threshold": threshold,
+            "filter_model": model,
+            "articles": relevant_articles
+        }
+        
+        # 生成输出文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_keyword = re.sub(r'[^\w\s-]', '', keyword).replace(' ', '_')[:30]
+        output_filename = f"article_{safe_keyword}_filtered_{timestamp}.json"
+        output_filepath = self.output_dir / output_filename
+        
+        with open(output_filepath, 'w', encoding='utf-8') as f:
+            json.dump(output_data, f, ensure_ascii=False, indent=2)
+        
+        print(f"\n[保存] 筛选后的结果已保存到: {output_filepath}")
+        return output_filepath
+    
+    async def _filter_single_page_with_llm(self,
+                                            article_metadata: List[Dict],
+                                            keyword: str,
+                                            llm_client,
+                                            llm_model: str,
+                                            threshold: float = 0.5) -> List[Dict]:
+        """
+        对单页文章进行 LLM 筛选
+        
+        Args:
+            article_metadata: 单页文章元数据列表
+            keyword: 搜索关键字
+            llm_client: 已初始化的 LLM 客户端
+            llm_model: 模型名称
+            threshold: 相关性阈值
+            
+        Returns:
+            筛选后的文章列表
+        """
+        if not article_metadata:
+            return []
+        
+        # 解码标题用于显示
+        decoded_titles = []
+        for title in article_metadata:
+            t = title.get('title', '')
+            t = t.replace('+', ' ')
+            try:
+                t = unquote(t)
+            except:
+                pass
+            decoded_titles.append(t[:60] + "..." if len(t) > 60 else t)
+        
+        print(f"    [LLM] 待筛选文章标题:")
+        for i, t in enumerate(decoded_titles[:5]):  # 只显示前5个
+            print(f"      [{i+1}] {t}")
+        if len(decoded_titles) > 5:
+            print(f"      ... 还有 {len(decoded_titles) - 5} 篇")
+        
+        # 构建 prompt - 传入完整文章列表
+        prompt = self._build_relevance_prompt(keyword, article_metadata)
+        
+        print(f"    [LLM] 发送请求到模型: {llm_model}...")
+        
+        try:
+            start_time = time.time()
+            response = llm_client.chat.completions.create(
+                model=llm_model,
+                messages=[
+                    {"role": "system", "content": "你是一个文章相关性判断专家，擅长分析文章标题与搜索主题的相关性。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=2000
+            )
+            elapsed = time.time() - start_time
+            
+            result_text = response.choices[0].message.content.strip()
+            print(f"    [LLM] 模型响应时间: {elapsed:.2f}秒")
+            print(f"    [LLM] 响应长度: {len(result_text)} 字符")
+            
+            # 解析 JSON 结果
+            try:
+                # 尝试提取 JSON
+                if '```json' in result_text:
+                    result_text = result_text.split('```json')[1].split('```')[0]
+                elif '```' in result_text:
+                    result_text = result_text.split('```')[1].split('```')[0]
+                
+                result_json = json.loads(result_text)
+                results = result_json.get('results', [])
+                
+                # 显示每个结果的判断
+                print(f"    [LLM] 模型判断结果:")
+                relevant_articles = []
+                for i, result in enumerate(results):
+                    if i < len(article_metadata):
+                        title_short = decoded_titles[i][:40] if i < len(decoded_titles) else "Unknown"
+                        is_relevant = result.get('relevant', False)
+                        reason = result.get('reason', '')[:30]
+                        status = "✓ 相关" if is_relevant else "✗ 不相关"
+                        print(f"      [{i+1}] {status} - {title_short}")
+                        if is_relevant:
+                            relevant_articles.append(article_metadata[i])
+                
+                return relevant_articles
+                
+            except json.JSONDecodeError as e:
+                # 解析失败时返回所有文章
+                print(f"    [警告] 解析LLM响应失败: {e}")
+                print(f"    [警告] 响应内容: {result_text[:200]}...")
+                return article_metadata
+                
+        except Exception as e:
+            print(f"    [错误] LLM 调用失败: {e}")
+            # API 失败时返回所有文章
+            return article_metadata
     
     async def _prompt_user_to_select_articles(self, article_metadata: List[Dict], max_download: int = 20) -> List[Dict]:
         """
@@ -2434,12 +2895,35 @@ Full Text:
                 
                 print(f"页面标题: {await page.title()}")
                 
+                # 提取总结果数（从第一页HTML）
+                html_content = await page.content()
+                total_results = self._extract_total_results(html_content)
+                if total_results:
+                    print(f"总结果数: {total_results}")
+                
+                # 保存基础URL用于后续分页
+                base_search_url = url
+                
                 # 提取搜索关键字
                 parsed_url = urlparse(url)
                 query_params = parse_qs(parsed_url.query)
                 keyword = query_params.get('val-base-0', ['unknown'])[0]
                 
                 all_metadata = []
+                
+                # 初始化 LLM 客户端（如果启用）
+                llm_client = None
+                llm_model = None
+                use_llm_filter = os.getenv("LLM_FILTER_ENABLED", "").lower() == "true"
+                llm_threshold = float(os.getenv("LLM_FILTER_THRESHOLD", "0.5"))
+                
+                if use_llm_filter and OPENAI_AVAILABLE:
+                    llm_result = self._init_llm_client()
+                    if llm_result:
+                        llm_client, llm_model = llm_result
+                        print(f"[LLM] 每页筛选已启用，阈值: {llm_threshold}")
+                    else:
+                        print("[警告] LLM 初始化失败，将不使用每页筛选")
                 
                 # 逐页处理
                 for page_num in range(1, self.max_pages + 1):
@@ -2492,6 +2976,24 @@ Full Text:
                         print(f"  [第 {page_num}] 未捕获到payload，从页面提取...")
                         article_metadata = await self._extract_selected_articles_metadata(page)
                     
+                    # 补充 preview（如果从payload解析的没有preview）
+                    if article_metadata:
+                        # 检查是否有preview
+                        has_preview = any(art.get('preview') for art in article_metadata)
+                        if not has_preview:
+                            print(f"  [补充] 从HTML提取preview...")
+                            html_content = await page.content()
+                            html_articles = self._extract_preview_from_html(html_content)
+                            if html_articles:
+                                # 通过 docref 匹配补充 preview
+                                for art in article_metadata:
+                                    docref = art.get('docref', '')
+                                    for html_art in html_articles:
+                                        if html_art.get('docref') == docref:
+                                            art['preview'] = html_art.get('preview', '')
+                                            break
+                                print(f"  [补充] 为 {len(article_metadata)} 篇文章补充了preview")
+                    
                     if not article_metadata:
                         print(f"  [第 {page_num}] 未获取到元数据，尝试备选方案...")
                         # 尝试从页面直接提取
@@ -2514,8 +3016,40 @@ Full Text:
                             })
                     
                     if article_metadata:
-                        all_metadata.extend(article_metadata)
-                        print(f"  [成功] 获取到 {len(article_metadata)} 篇文章元数据")
+                        # 第一步：筛选 docref 以 "news/" 开头的记录
+                        filtered_by_docref = [
+                            art for art in article_metadata 
+                            if art.get('docref', '').startswith('news/')
+                        ]
+                        
+                        if len(filtered_by_docref) < len(article_metadata):
+                            print(f"  [预筛选] 过滤掉 {len(article_metadata) - len(filtered_by_docref)} 条非 news/ 开头的记录")
+                            print(f"  [预筛选] 保留 {len(filtered_by_docref)} 条记录")
+                        
+                        # 使用预筛选后的结果
+                        article_metadata = filtered_by_docref
+                        
+                        # 第二步：每页 LLM 筛选（包含标题+预览）
+                        if llm_client and article_metadata:
+                            # 显示待筛选文章标题
+                            print(f"  [LLM] 正在筛选第 {page_num} 页的 {len(article_metadata)} 篇文章...")
+                            for i, art in enumerate(article_metadata[:5]):
+                                title = art.get('title', 'N/A')[:50]
+                                print(f"      [{i+1}] {title}")
+                            if len(article_metadata) > 5:
+                                print(f"      ... 还有 {len(article_metadata) - 5} 篇")
+                            
+                            article_metadata = await self._filter_single_page_with_llm(
+                                article_metadata, keyword, llm_client, llm_model, llm_threshold
+                            )
+                            if article_metadata:
+                                print(f"  [LLM] 筛选后保留 {len(article_metadata)} 篇相关文章")
+                            else:
+                                print(f"  [LLM] 筛选后无相关文章")
+                        
+                        if article_metadata:
+                            all_metadata.extend(article_metadata)
+                            print(f"  [成功] 获取到 {len(article_metadata)} 篇文章元数据")
                     else:
                         print(f"  [第 {page_num}] 无法获取元数据，停止")
                         break
@@ -2525,8 +3059,10 @@ Full Text:
                         # 查找下一页按钮
                         next_button = await page.query_selector('a[data-testid="pager-next"], button[data-testid="pager-next"], a:has-text("Next"), a:has-text("›")')
                         if next_button:
-                            print(f"  [翻页] 点击下一页...")
-                            await next_button.click()
+                            # 构建下一页URL
+                            next_url = self._build_page_url(base_search_url, page_num + 1)
+                            print(f"  [翻页] 访问第 {page_num + 1} 页...")
+                            await page.goto(next_url, wait_until="networkidle", timeout=60000)
                             await asyncio.sleep(2)
                         else:
                             print(f"  [信息] 未找到下一页按钮，停止")
@@ -2698,10 +3234,20 @@ def main():
 
 9. 设置单次下载最大数量:
    python newsbank_api_downloader.py --from-metadata "xxx.json" --max-download 10
+
+10. 使用 LLM 筛选文章相关性:
+   python newsbank_api_downloader.py --filter-from "article_treasury_wine_xxx.json"
+
+11. LLM 筛选并指定阈值:
+   python newsbank_api_downloader.py --filter-from "xxx.json" --threshold 0.7
+
+12. LLM 筛选并指定模型:
+   python newsbank_api_downloader.py --filter-from "xxx.json" --llm-model "z-ai/glm4.7"
         """
     )
     
-    parser.add_argument("keyword_or_url", help="搜索关键字或NewsBank搜索URL")
+    parser.add_argument("keyword_or_url", nargs='?', default=None,
+                       help="搜索关键字或NewsBank搜索URL (LLM筛选模式时可选)")
     
     parser.add_argument("--max-results", type=int, default=200,
                        help="最大结果数 (默认: 200)")
@@ -2736,6 +3282,25 @@ def main():
     
     parser.add_argument("--max-download", type=int, default=20,
                        help="单次下载最大文章数 (默认: 20，防止服务器限制)")
+    
+    # LLM 筛选参数
+    parser.add_argument("--filter-llm", action="store_true",
+                       help="使用 LLM 筛选相关文章")
+    
+    parser.add_argument("--filter-from", type=str, default=None,
+                       help="从已保存的 article_*.json 文件进行 LLM 筛选")
+    
+    parser.add_argument("--api-key", type=str, default=None,
+                       help="LLM API 密钥 (默认从环境变量 NVIDIA_API_KEY 或 OPENAI_API_KEY 读取)")
+    
+    parser.add_argument("--llm-model", type=str, default=None,
+                       help="LLM 模型名称 (默认: z-ai/glm4.7 for NVIDIA, gpt-3.5-turbo for OpenAI)")
+    
+    parser.add_argument("--threshold", type=float, default=0.5,
+                       help="LLM 相关性阈值 (0-1, 默认: 0.5)")
+    
+    parser.add_argument("--batch-size", type=int, default=10,
+                       help="LLM 每批次处理的文章数 (默认: 10)")
     
     args = parser.parse_args()
     
@@ -2774,6 +3339,33 @@ def main():
         # 下载选中的文章
         print(f"\n[开始] 下载选中的 {len(selected_metadata)} 篇文章...")
         asyncio.run(downloader.download_selected_articles(selected_metadata, args.output_dir))
+        return
+    
+    # LLM 筛选模式
+    if args.filter_from:
+        print("\n[模式] LLM 智能筛选模式")
+        print("=" * 50)
+        
+        json_path = Path(args.filter_from)
+        if not json_path.exists():
+            print(f"[错误] 文件不存在: {json_path}")
+            return
+        
+        # 运行 LLM 筛选
+        result = asyncio.run(downloader._filter_articles_by_llm(
+            json_file=json_path,
+            api_key=args.api_key,
+            model=args.llm_model,
+            threshold=args.threshold,
+            batch_size=args.batch_size
+        ))
+        
+        if result:
+            print(f"\n[完成] LLM 筛选完成，结果已保存到: {result}")
+            print("\n可以使用 --from-metadata 参数下载筛选后的文章:")
+            print(f"  python newsbank_api_downloader.py --from-metadata \"{result}\"")
+        else:
+            print("[错误] LLM 筛选失败")
         return
     
     # 判断输入是关键字还是URL
