@@ -59,9 +59,11 @@ class NewsBankAPIDownloader:
     def __init__(self,
                  headless: bool = False,
                  max_pages: int = 10,
-                 output_dir: str = "articles_api"):
+                 output_dir: str = "articles_api",
+                 request_delay: float = 2.0):
         self.headless = headless
         self.max_pages = max_pages
+        self.request_delay = request_delay  # 请求间隔（秒），防止被封
         
         self.cookie_file = Path("cookies/newsbank_auth.json")
         self.output_dir = Path(output_dir)
@@ -79,6 +81,14 @@ class NewsBankAPIDownloader:
         
         self.articles: List[ArticleInfo] = []
         self.api_endpoint = "https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/nb-multidocs/get"
+    
+    async def _safe_delay(self, seconds: float = 2.0):
+        """安全的延迟，带有随机波动以模拟人类行为"""
+        import random
+        delay = seconds if seconds else self.request_delay
+        # 添加随机波动 (±20%)，模拟人类行为
+        jitter = delay * 0.2 * (random.random() * 2 - 1)
+        await asyncio.sleep(delay + jitter)
     
     async def check_login(self, context: BrowserContext) -> bool:
         """检查登录状态"""
@@ -247,33 +257,38 @@ class NewsBankAPIDownloader:
                 // 查找所有选中的文章复选框
                 const checkboxes = document.querySelectorAll('article.search-hits__hit input[type="checkbox"]:checked');
                 
+                console.log('Found ' + checkboxes.length + ' checked checkboxes');
+                
                 checkboxes.forEach(checkbox => {
                     // 找到对应的文章元素
                     const article = checkbox.closest('article.search-hits__hit');
                     if (!article) return;
                     
-                    // 提取文章信息
-                    // 方法1: 从data属性提取
-                    const docref = article.dataset.docId || article.dataset.docId;
-                    const pbi = article.dataset.pbi || '';
-                    const cacheType = article.dataset.cacheType || 'AWGLNB';
+                    // 打印article的dataset用于调试
+                    console.log('Article dataset:', JSON.stringify(article.dataset));
+                    
+                    // 提取文章信息 - 从data属性提取
+                    const docref = article.dataset.docId || '';
+                    const pbi = article.dataset.pbi || article.dataset.pbI || '';
+                    const cacheType = article.dataset.cacheType || article.dataset.cacheType || 'AWGLNB';
                     const product = article.dataset.product || 'AWGLNB';
+                    const size = article.dataset.size || article.dataset.docSize || '0';
                     
                     // 方法2: 从href中提取docref
                     const link = article.querySelector('h3.search-hits__hit__title a');
                     const href = link ? link.href : '';
                     const docMatch = href.match(/doc=([^&]+)/);
-                    const docIdFromHref = docMatch ? 'news/' + docMatch[1] : docref;
+                    const docIdFromHref = docMatch ? 'news/' + docMatch[1] : '';
                     
                     // 提取标题
                     const title = link ? link.textContent.trim() : '';
                     
-                    // 提取size (可能需要在data属性中查找)
-                    const size = article.dataset.size || '0';
+                    // 使用从href中提取的docref（更可靠）
+                    const finalDocref = docIdFromHref || docref;
                     
-                    if (docIdFromHref || docref) {
+                    if (finalDocref) {
                         selectedArticles.push({
-                            docref: docIdFromHref || docref,
+                            docref: finalDocref,
                             cache_type: cacheType,
                             size: parseInt(size) || 0,
                             pbi: pbi,
@@ -283,6 +298,38 @@ class NewsBankAPIDownloader:
                     }
                 });
                 
+                // 如果没有选中任何文章，返回所有文章（未选中的）
+                if (selectedArticles.length === 0) {
+                    const allArticles = document.querySelectorAll('article.search-hits__hit');
+                    console.log('No checked articles, trying all ' + allArticles.length + ' articles');
+                    
+                    allArticles.forEach(article => {
+                        const link = article.querySelector('h3.search-hits__hit__title a');
+                        const href = link ? link.href : '';
+                        const docMatch = href.match(/doc=([^&]+)/);
+                        const docIdFromHref = docMatch ? 'news/' + docMatch[1] : '';
+                        const title = link ? link.textContent.trim() : '';
+                        
+                        // 从各种可能的data属性中提取
+                        const pbi = article.dataset.pbi || article.dataset.pbI || 
+                                   article.dataset.bpi || '';
+                        const cacheType = article.dataset.cacheType || 'AWGLNB';
+                        const product = article.dataset.product || 'AWGLNB';
+                        const size = article.dataset.size || article.dataset.docSize || '0';
+                        
+                        if (docIdFromHref) {
+                            selectedArticles.push({
+                                docref: docIdFromHref,
+                                cache_type: cacheType,
+                                size: parseInt(size) || 0,
+                                pbi: pbi,
+                                title: title,
+                                product: product
+                            });
+                        }
+                    });
+                }
+                
                 return selectedArticles;
             }""")
             
@@ -290,7 +337,8 @@ class NewsBankAPIDownloader:
             
             # 打印前几篇用于调试
             for i, art in enumerate(metadata[:3]):
-                print(f"    [{i+1}] {art.get('title', 'N/A')[:30]}... docref={art.get('docref', 'N/A')}")
+                print(f"    [{i+1}] title={art.get('title', 'N/A')[:30]}...")
+                print(f"        docref={art.get('docref', 'N/A')}, size={art.get('size', 0)}, pbi={art.get('pbi', 'N/A')[:20]}...")
             
             return metadata
             
@@ -395,6 +443,179 @@ class NewsBankAPIDownloader:
             print(f"  [解析] 解析payload失败: {e}")
             # 打印原始payload用于调试
             print(f"  [调试] 原始payload: {payload_str[:300]}...")
+            return None
+    
+    async def _save_article_metadata_to_json(self, article_metadata: List[Dict], keyword: str) -> Path:
+        """
+        将文章元数据保存到JSON文件
+        
+        Args:
+            article_metadata: 文章元数据列表
+            keyword: 搜索关键字
+            
+        Returns:
+            保存的文件路径
+        """
+        # 生成文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_keyword = re.sub(r'[^\w\s-]', '', keyword).replace(' ', '_')[:30]
+        filename = f"article_metadata_{safe_keyword}_{timestamp}.json"
+        filepath = self.output_dir / filename
+        
+        # 准备保存的数据
+        save_data = {
+            "search_keyword": keyword,
+            "extracted_at": datetime.now().isoformat(),
+            "total_articles": len(article_metadata),
+            "articles": article_metadata
+        }
+        
+        # 保存到JSON文件
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(save_data, f, ensure_ascii=False, indent=2)
+        
+        print(f"  [保存] 元数据已保存到: {filepath}")
+        return filepath
+    
+    async def _prompt_user_to_select_articles(self, article_metadata: List[Dict], max_download: int = 20) -> List[Dict]:
+        """
+        让用户选择要下载的文章
+        
+        Args:
+            article_metadata: 文章元数据列表
+            max_download: 建议的最大下载数量（服务器限制）
+            
+        Returns:
+            用户选择的文章元数据列表
+        """
+        print("\n" + "=" * 60)
+        print("[文章选择]")
+        print("=" * 60)
+        
+        total = len(article_metadata)
+        print(f"\n共提取到 {total} 篇文章。")
+        print(f"\n⚠️  警告: 建议单次下载不超过 {max_download} 篇，防止服务器限制。")
+        
+        # 显示文章列表（带编号）
+        print("\n文章列表:")
+        print("-" * 60)
+        
+        for i, art in enumerate(article_metadata, 1):
+            title = art.get('title', 'N/A')[:60]
+            size = art.get('size', 0)
+            docref = art.get('docref', 'N/A')
+            print(f"  {i:3}. [{size:>6} bytes] {title}")
+        
+        print("-" * 60)
+        
+        # 让用户输入选择
+        print(f"\n请选择要下载的文章:")
+        print("  - 输入数字编号 (例如: 1,5,10)")
+        print("  - 输入范围 (例如: 1-10)")
+        print("  - 输入 'all' 下载全部 (⚠️ 可能触发服务器限制)")
+        print("  - 输入 'first N' 下载前N篇 (例如: first 10)")
+        print("  - 输入 'last N' 下载后N篇")
+        print("  - 输入 'cancel' 取消下载")
+        
+        while True:
+            user_input = input("\n请输入选择: ").strip().lower()
+            
+            if user_input == 'cancel':
+                print("  已取消下载")
+                return []
+            
+            if user_input == 'all':
+                selected = article_metadata
+                print(f"\n  ⚠️  选择了全部 {len(selected)} 篇文章")
+                if len(selected) > max_download:
+                    confirm = input(f"  超过建议数量 ({max_download})，是否继续? (y/n): ").strip().lower()
+                    if confirm != 'y':
+                        continue
+                return selected
+            
+            # 处理 "first N" 或 "last N"
+            if user_input.startswith('first '):
+                try:
+                    n = int(user_input.split()[1])
+                    selected = article_metadata[:n]
+                    print(f"\n  已选择前 {len(selected)} 篇文章")
+                    return selected
+                except:
+                    print("  输入格式错误")
+                    continue
+            
+            if user_input.startswith('last '):
+                try:
+                    n = int(user_input.split()[1])
+                    selected = article_metadata[-n:]
+                    print(f"\n  已选择后 {len(selected)} 篇文章")
+                    return selected
+                except:
+                    print("  输入格式错误")
+                    continue
+            
+            # 处理范围 (例如: 1-10)
+            if '-' in user_input:
+                try:
+                    parts = user_input.split('-')
+                    start = int(parts[0].strip())
+                    end = int(parts[1].strip())
+                    if 1 <= start <= end <= total:
+                        selected = article_metadata[start-1:end]
+                        print(f"\n  已选择第 {start} 到 {end} 篇，共 {len(selected)} 篇")
+                        return selected
+                    else:
+                        print(f"  范围无效 (1-{total})")
+                except:
+                    print("  输入格式错误")
+                    continue
+            
+            # 处理单个或多个数字 (例如: 1,5,10)
+            if ',' in user_input or user_input.replace(',', '').replace(' ', '').isdigit():
+                try:
+                    # 解析输入
+                    nums = []
+                    for part in user_input.replace(',', ' ').split():
+                        if part.isdigit():
+                            nums.append(int(part))
+                    
+                    if nums:
+                        # 验证范围
+                        valid = all(1 <= n <= total for n in nums)
+                        if valid:
+                            selected = [article_metadata[n-1] for n in nums]
+                            print(f"\n  已选择 {len(selected)} 篇文章: {nums}")
+                            return selected
+                        else:
+                            print(f"  数字范围无效 (1-{total})")
+                    else:
+                        print("  输入格式错误")
+                except:
+                    print("  输入格式错误")
+                    continue
+            
+            print("  输入无效，请重试")
+    
+    def _load_article_metadata_from_json(self, json_path: Path) -> Optional[List[Dict]]:
+        """
+        从JSON文件加载文章元数据
+        
+        Args:
+            json_path: JSON文件路径
+            
+        Returns:
+            文章元数据列表，如果失败返回None
+        """
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            articles = data.get('articles', [])
+            print(f"  [加载] 从 {json_path.name} 加载了 {len(articles)} 篇文章元数据")
+            return articles
+            
+        except Exception as e:
+            print(f"  [错误] 加载JSON失败: {e}")
             return None
     
     def _build_download_payload(self, 
@@ -503,93 +724,106 @@ class NewsBankAPIDownloader:
                             is_checked = await select_all_elem.is_checked()
                             print(f"    当前选中状态: {is_checked}")
                             
-                            if not is_checked:
-                                print(f"    准备点击复选框...")
-                                
-                                # 方法1: 使用鼠标模拟点击（更真实）
+                            # 强制触发网络请求：无论是否选中，都要点击
+                            # 如果已选中，先取消再选中；如果未选中，直接选中
+                            if is_checked:
+                                print(f"    [强制] 复选框已选中，先取消再选中以触发网络请求...")
+                                # 取消选中
                                 try:
-                                    box = await select_all_elem.bounding_box()
-                                    if box:
-                                        # 计算元素中心点
-                                        x = box['x'] + box['width'] / 2
-                                        y = box['y'] + box['height'] / 2
-                                        print(f"    使用鼠标点击坐标: ({x}, {y})")
-                                        await page.mouse.click(x, y)
-                                        print(f"    [成功] 使用 mouse.click() 点击")
-                                except Exception as mouse_err:
-                                    print(f"    [警告] 鼠标点击失败: {mouse_err}")
-                                    
-                                    # 方法2: 直接点击
-                                    try:
-                                        await select_all_elem.click(force=True)
-                                        print(f"    [成功] 使用 click(force=True) 点击")
-                                    except Exception as click_err:
-                                        print(f"    [警告] 直接点击失败: {click_err}")
-                                        
-                                        # 方法3: JavaScript点击
-                                        try:
-                                            await page.evaluate(f"""
-                                                () => {{
-                                                    const cb = document.querySelector('{selector}');
-                                                    if (cb) {{
-                                                        cb.click();
-                                                        return 'clicked';
-                                                    }}
-                                                    return 'not found';
-                                                }}
-                                            """)
-                                            print(f"    [成功] 使用页面级 JavaScript 点击")
-                                        except Exception as js_err:
-                                            print(f"    [警告] JavaScript点击也失败: {js_err}")
-                                            continue
-                                
-                                # 等待UI更新
-                                await asyncio.sleep(2)
-                                
-                                # 验证是否选中
-                                is_checked_after = await select_all_elem.is_checked()
-                                print(f"    点击后选中状态: {is_checked_after}")
-                                
-                                # 也检查页面上的选中计数
-                                selection_text = await page.evaluate("""
+                                    await select_all_elem.click(force=True)
+                                    print(f"    [取消] 已取消选中")
+                                    await asyncio.sleep(0.5)
+                                except Exception as e:
+                                    print(f"    [警告] 取消失败: {e}")
+                            
+                            print(f"    准备点击复选框...")
+                            
+                            # 方法1: 使用鼠标模拟点击（更真实）
+                            click_success = False
+                            try:
+                                box = await select_all_elem.bounding_box()
+                                if box:
+                                    # 计算元素中心点
+                                    x = box['x'] + box['width'] / 2
+                                    y = box['y'] + box['height'] / 2
+                                    print(f"    使用鼠标点击坐标: ({x}, {y})")
+                                    await page.mouse.click(x, y)
+                                    print(f"    [成功] 使用 mouse.click() 点击")
+                                    click_success = True
+                            except Exception as mouse_err:
+                                print(f"    [警告] 鼠标点击失败: {mouse_err}")
+                            
+                            # 方法2: 直接点击
+                            if not click_success:
+                                try:
+                                    await select_all_elem.click(force=True)
+                                    print(f"    [成功] 使用 click(force=True) 点击")
+                                    click_success = True
+                                except Exception as click_err:
+                                    print(f"    [警告] 直接点击失败: {click_err}")
+                            
+                            # 方法3: JavaScript点击
+                            if not click_success:
+                                try:
+                                    await page.evaluate(f"""
+                                        () => {{
+                                            const cb = document.querySelector('{selector}');
+                                            if (cb) {{
+                                                cb.click();
+                                                return 'clicked';
+                                            }}
+                                            return 'not found';
+                                        }}
+                                    """)
+                                    print(f"    [成功] 使用页面级 JavaScript 点击")
+                                    click_success = True
+                                except Exception as js_err:
+                                    print(f"    [警告] JavaScript点击也失败: {js_err}")
+                            
+                            # 等待UI更新
+                            await asyncio.sleep(2)
+                            
+                            # 验证是否选中
+                            is_checked_after = await select_all_elem.is_checked()
+                            print(f"    点击后选中状态: {is_checked_after}")
+                            
+                            # 也检查页面上的选中计数
+                            selection_text = await page.evaluate("""
+                                () => {
+                                    const el = document.querySelector('.search-hits__selections--feedback');
+                                    return el ? el.textContent : 'not found';
+                                }
+                            """)
+                            print(f"    页面选中计数: {selection_text}")
+                            
+                            if is_checked_after or '100' in selection_text:
+                                print(f"  [成功] 全选复选框已选中")
+                                return True
+                            else:
+                                print(f"  [警告] 点击后仍未选中，尝试强制设置属性")
+                                # 强制设置checked属性并触发事件
+                                await page.evaluate("""
                                     () => {
-                                        const el = document.querySelector('.search-hits__selections--feedback');
-                                        return el ? el.textContent : 'not found';
+                                        const cb = document.getElementById('search-hits__select-all');
+                                        if (cb) {
+                                            cb.checked = true;
+                                            cb.dispatchEvent(new Event('change', { bubbles: true }));
+                                            cb.dispatchEvent(new Event('click', { bubbles: true }));
+                                            
+                                            // 同时勾选所有文章复选框
+                                            const articleCheckboxes = document.querySelectorAll('article.search-hits__hit input[type="checkbox"]');
+                                            articleCheckboxes.forEach(box => {
+                                                if (!box.checked) {
+                                                    box.checked = true;
+                                                    box.dispatchEvent(new Event('change', { bubbles: true }));
+                                                }
+                                            });
+                                            return `checked ${articleCheckboxes.length} boxes`;
+                                        }
+                                        return 'checkbox not found';
                                     }
                                 """)
-                                print(f"    页面选中计数: {selection_text}")
-                                
-                                if is_checked_after or '100' in selection_text:
-                                    print(f"  [成功] 全选复选框已选中")
-                                    return True
-                                else:
-                                    print(f"  [警告] 点击后仍未选中，尝试强制设置属性")
-                                    # 强制设置checked属性并触发事件
-                                    await page.evaluate("""
-                                        () => {
-                                            const cb = document.getElementById('search-hits__select-all');
-                                            if (cb) {
-                                                cb.checked = true;
-                                                cb.dispatchEvent(new Event('change', { bubbles: true }));
-                                                cb.dispatchEvent(new Event('click', { bubbles: true }));
-                                                
-                                                // 同时勾选所有文章复选框
-                                                const articleCheckboxes = document.querySelectorAll('article.search-hits__hit input[type="checkbox"]');
-                                                articleCheckboxes.forEach(box => {
-                                                    if (!box.checked) {
-                                                        box.checked = true;
-                                                        box.dispatchEvent(new Event('change', { bubbles: true }));
-                                                    }
-                                                });
-                                                return `checked ${articleCheckboxes.length} boxes`;
-                                            }
-                                            return 'checkbox not found';
-                                        }
-                                    """)
-                                    await asyncio.sleep(1)
-                                    return True
-                            else:
-                                print(f"  [信息] 全选复选框已经选中")
+                                await asyncio.sleep(1)
                                 return True
                     else:
                         print(f"    未找到元素")
@@ -2112,6 +2346,286 @@ Full Text:
             finally:
                 await context.close()
                 await browser.close()
+    
+    async def extract_metadata_only(self, url: str):
+        """
+        仅提取文章元数据并保存到JSON，不下载文章内容
+        
+        两阶段模式第一步：
+        1. 访问搜索页面
+        2. 选中所有文章
+        3. 提取元数据并保存到JSON
+        4. 让用户选择要下载的文章
+        """
+        print("=" * 80)
+        print("元数据提取模式")
+        print("=" * 80)
+        print(f"\n目标URL: {url[:80]}...")
+        print(f"最大页数: {self.max_pages}")
+        
+        # 启动浏览器
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=self.headless,
+                args=['--disable-blink-features=AutomationControlled']
+            )
+            
+            context = await browser.new_context(
+                storage_state=str(self.cookie_file) if self.cookie_file.exists() else None,
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            )
+            
+            page = await context.new_page()
+            
+            try:
+                # 检查登录
+                if not await self.check_login(context):
+                    if self.headless:
+                        print("[错误] 无头模式下无法登录")
+                        return
+                    
+                    if not await self.do_login(page):
+                        return
+                    
+                    await context.storage_state(path=str(self.cookie_file))
+                
+                # 访问URL
+                print(f"\n[访问页面]")
+                await page.goto(url, wait_until="networkidle", timeout=60000)
+                await asyncio.sleep(2)
+                
+                print(f"页面标题: {await page.title()}")
+                
+                # 提取搜索关键字
+                parsed_url = urlparse(url)
+                query_params = parse_qs(parsed_url.query)
+                keyword = query_params.get('val-base-0', ['unknown'])[0]
+                
+                all_metadata = []
+                
+                # 逐页处理
+                for page_num in range(1, self.max_pages + 1):
+                    print(f"\n[第 {page_num} 页] 提取元数据...")
+                    
+                    # 先设置网络请求监听器（在选中之前！）
+                    print(f"  [设置] 设置网络请求监听器...")
+                    captured_payloads = []
+                    
+                    async def handle_request(request):
+                        url = request.url
+                        if "nb-cache-doc" in url:
+                            try:
+                                post_data = request.post_data
+                                if post_data:
+                                    if isinstance(post_data, bytes):
+                                        post_data = post_data.decode('utf-8')
+                                    if 'docs=' in post_data:
+                                        captured_payloads.append(post_data)
+                                        print(f"  [捕获] 捕获到 nb-cache-doc 请求，payload长度: {len(post_data)}")
+                            except:
+                                pass
+                    
+                    page.on("request", handle_request)
+                    
+                    # 选中当前页所有文章
+                    print(f"  [选中] 点击全选复选框...")
+                    select_success = await self.select_all_articles(page)
+                    if not select_success:
+                        print(f"  [警告] 选文章可能未成功，继续...")
+                    
+                    # 等待网络请求完成
+                    print(f"  [等待] 等待网络请求...")
+                    for i in range(5):
+                        await asyncio.sleep(0.5)
+                        if captured_payloads:
+                            print(f"  [成功] 捕获到 {len(captured_payloads)} 个请求")
+                            break
+                    
+                    # 解析捕获的payload
+                    article_metadata = None
+                    if captured_payloads:
+                        payload = captured_payloads[-1]  # 使用最后一个
+                        article_metadata = self._parse_captured_payload(payload)
+                        if article_metadata:
+                            print(f"  [成功] 从捕获的payload解析到 {len(article_metadata)} 篇文章")
+                    
+                    # 如果没有捕获到，从页面提取
+                    if not article_metadata:
+                        print(f"  [第 {page_num}] 未捕获到payload，从页面提取...")
+                        article_metadata = await self._extract_selected_articles_metadata(page)
+                    
+                    if not article_metadata:
+                        print(f"  [第 {page_num}] 未获取到元数据，尝试备选方案...")
+                        # 尝试从页面直接提取
+                        html_content = await page.content()
+                        article_ids = self._extract_article_ids_from_page(html_content)
+                        print(f"  [备选] 从页面提取到 {len(article_ids)} 个文章ID")
+                        
+                        # 初始化为空列表
+                        article_metadata = []
+                        
+                        # 构建简单元数据（需要更多字段）
+                        for doc_id in article_ids:
+                            article_metadata.append({
+                                "docref": f"news/{doc_id}",
+                                "cache_type": "AWGLNB",
+                                "size": 0,
+                                "pbi": "",
+                                "title": f"Article {doc_id}",
+                                "product": "AWGLNB"
+                            })
+                    
+                    if article_metadata:
+                        all_metadata.extend(article_metadata)
+                        print(f"  [成功] 获取到 {len(article_metadata)} 篇文章元数据")
+                    else:
+                        print(f"  [第 {page_num}] 无法获取元数据，停止")
+                        break
+                    
+                    # 尝试翻页
+                    if page_num < self.max_pages:
+                        # 查找下一页按钮
+                        next_button = await page.query_selector('a[data-testid="pager-next"], button[data-testid="pager-next"], a:has-text("Next"), a:has-text("›")')
+                        if next_button:
+                            print(f"  [翻页] 点击下一页...")
+                            await next_button.click()
+                            await asyncio.sleep(2)
+                        else:
+                            print(f"  [信息] 未找到下一页按钮，停止")
+                            break
+                    
+                    # 检查是否达到100篇（API限制）
+                    if len(all_metadata) >= 100:
+                        print(f"  [信息] 已获取100篇，达到限制")
+                        break
+                
+                # 去重
+                seen = set()
+                unique_metadata = []
+                for art in all_metadata:
+                    docref = art.get('docref', '')
+                    if docref not in seen:
+                        seen.add(docref)
+                        unique_metadata.append(art)
+                
+                print(f"\n[完成] 共提取到 {len(unique_metadata)} 篇唯一文章")
+                
+                # 保存到JSON
+                json_path = await self._save_article_metadata_to_json(unique_metadata, keyword)
+                
+                # 让用户选择
+                print("\n" + "=" * 80)
+                confirm = input("是否现在选择要下载的文章? (y/n): ").strip().lower()
+                
+                if confirm == 'y':
+                    selected_metadata = await self._prompt_user_to_select_articles(unique_metadata)
+                    
+                    if selected_metadata:
+                        print(f"\n[开始] 下载选中的 {len(selected_metadata)} 篇文章...")
+                        # 重新创建浏览器上下文进行下载
+                        await context.close()
+                        await browser.close()
+                        await self.download_selected_articles(selected_metadata, self.output_dir)
+                        return
+                
+                print(f"\n[完成] 元数据已保存到: {json_path}")
+                print("如需下载，请运行:")
+                print(f"  python newsbank_api_downloader.py --from-metadata \"{json_path}\"")
+                
+            except Exception as e:
+                print(f"\n[错误] {e}")
+                import traceback
+                traceback.print_exc()
+            
+            finally:
+                await context.close()
+                await browser.close()
+    
+    async def download_selected_articles(self, article_metadata: List[Dict[str, Any]], output_dir: str | Path):
+        """
+        下载用户选定的文章
+        
+        Args:
+            article_metadata: 用户选定的文章元数据列表
+            output_dir: 输出目录
+        """
+        print("\n" + "=" * 80)
+        print("下载选定文章")
+        print("=" * 80)
+        
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 启动浏览器
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=self.headless,
+                args=['--disable-blink-features=AutomationControlled']
+            )
+            
+            context = await browser.new_context(
+                storage_state=str(self.cookie_file) if self.cookie_file.exists() else None,
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                accept_downloads=False
+            )
+            
+            page = await context.new_page()
+            
+            # 监听并取消下载事件
+            async def handle_download(download):
+                print(f"  [信息] 阻止了下载: {download.suggested_filename}")
+                await download.cancel()
+            
+            page.on("download", lambda d: asyncio.create_task(handle_download(d)))
+            
+            try:
+                # 检查登录
+                if not await self.check_login(context):
+                    if self.headless:
+                        print("[错误] 无头模式下无法登录")
+                        return
+                    
+                    if not await self.do_login(page):
+                        return
+                    
+                    await context.storage_state(path=str(self.cookie_file))
+                
+                # 访问任意NewsBank页面以获取session
+                await page.goto(
+                    "https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results?p=AWGLNB",
+                    wait_until="networkidle", timeout=30000
+                )
+                
+                # 获取p参数
+                p_param = "AWGLNB"
+                
+                # 调用API下载选定的文章
+                print(f"\n[调用API] 下载 {len(article_metadata)} 篇文章...")
+                response_data = await self._call_download_api_with_articles(page, article_metadata, p_param)
+                
+                if response_data and response_data.get('body'):
+                    body = response_data['body']
+                    print(f"  [调试] API响应长度: {len(body)} bytes")
+                    
+                    # 解析文章
+                    articles = self._parse_api_response(body, page_num=1)
+                    print(f"  [成功] 解析到 {len(articles)} 篇文章")
+                    
+                    # 保存文章
+                    await self.save_articles(page, articles, "", download_all=True)
+                else:
+                    print("[错误] API调用失败")
+                
+            except Exception as e:
+                print(f"\n[错误] {e}")
+                import traceback
+                traceback.print_exc()
+            
+            finally:
+                await context.close()
+                await browser.close()
 
 
 def main():
@@ -2138,6 +2652,15 @@ def main():
 
 6. 无头模式:
    python newsbank_api_downloader.py "treasury wine" --headless
+
+7. 仅提取元数据（两阶段模式）:
+   python newsbank_api_downloader.py "treasury wine" --metadata-only
+
+8. 从元数据文件加载并选择下载:
+   python newsbank_api_downloader.py --from-metadata "article_metadata_xxx.json"
+
+9. 设置单次下载最大数量:
+   python newsbank_api_downloader.py --from-metadata "xxx.json" --max-download 10
         """
     )
     
@@ -2161,17 +2684,60 @@ def main():
     parser.add_argument("--headless", action="store_true",
                        help="无头模式")
     
+    parser.add_argument("--delay", type=float, default=3.0,
+                       help="请求间隔秒数，防止被封 (默认: 3.0)")
+    
     parser.add_argument("--output-dir", default="articles_api",
                        help="输出目录 (默认: articles_api)")
     
+    # 新增：两阶段模式参数
+    parser.add_argument("--metadata-only", action="store_true",
+                       help="仅提取文章元数据并保存到JSON，不下载文章内容")
+    
+    parser.add_argument("--from-metadata", type=str, default=None,
+                       help="从已保存的元数据JSON文件加载并让用户选择下载")
+    
+    parser.add_argument("--max-download", type=int, default=20,
+                       help="单次下载最大文章数 (默认: 20，防止服务器限制)")
+    
     args = parser.parse_args()
+    
+    print(f"[注意] 请求间隔: {args.delay} 秒 (防止被封)")
     
     # 创建下载器实例
     downloader = NewsBankAPIDownloader(
         headless=args.headless,
         max_pages=args.max_pages,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        request_delay=args.delay
     )
+    
+    # 模式2: 从元数据文件加载并下载
+    if args.from_metadata:
+        json_path = Path(args.from_metadata)
+        if not json_path.exists():
+            print(f"[错误] 文件不存在: {json_path}")
+            return
+        
+        # 加载元数据
+        article_metadata = downloader._load_article_metadata_from_json(json_path)
+        if not article_metadata:
+            print("[错误] 加载元数据失败")
+            return
+        
+        # 让用户选择
+        selected_metadata = asyncio.run(downloader._prompt_user_to_select_articles(
+            article_metadata, max_download=args.max_download
+        ))
+        
+        if not selected_metadata:
+            print("已取消下载")
+            return
+        
+        # 下载选中的文章
+        print(f"\n[开始] 下载选中的 {len(selected_metadata)} 篇文章...")
+        asyncio.run(downloader.download_selected_articles(selected_metadata, args.output_dir))
+        return
     
     # 判断输入是关键字还是URL
     if downloader._is_search_keyword(args.keyword_or_url):
@@ -2192,7 +2758,14 @@ def main():
         url = args.keyword_or_url
         print(f"\n[信息] 使用提供的URL: {url}")
     
-    # 执行下载
+    # 模式1: 仅提取元数据
+    if args.metadata_only:
+        print("\n[模式] 元数据提取模式")
+        print("=" * 50)
+        asyncio.run(downloader.extract_metadata_only(url))
+        return
+    
+    # 正常下载模式
     asyncio.run(downloader.download_from_url(url, download_all=True))
 
 

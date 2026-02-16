@@ -1,0 +1,79 @@
+Request URL
+https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/nb-cache-doc/js/set
+Request Method
+POST
+Status Code
+200 OK
+Remote Address
+203.8.119.37:443
+Referrer Policy
+strict-origin-when-cross-origin
+cache-control
+no-cache, must-revalidate
+connection
+close
+content-security-policy
+default-src 'self'; script-src 'report-sample' 'self' 'unsafe-eval' 'unsafe-inline' *.newsbank.com https://cdn1.readspeaker.com https://apis.google.com https://cdn.polyfill.io/v2/polyfill.min.js https://www.google-analytics.com/analytics.js https://www.googletagmanager.com/gtag/js https://*.awswaf.com; style-src 'report-sample' 'self' 'unsafe-inline' https://cdn1.readspeaker.com https://fonts.googleapis.com; object-src 'self'; base-uri 'self'; connect-src 'self' *.newsbank.com *.readspeaker.com https://analytics.google.com https://stats.g.doubleclick.net https://www.google-analytics.com https://*.awswaf.com; font-src 'self' data: https://fonts.gstatic.com; frame-src 'self'; frame-ancestors 'self' https:; img-src 'self' https: *.newsbank.com *.googleusercontent.com https://www.google-analytics.com https://www.google.com https://www.googletagmanager.com; manifest-src 'self'; media-src 'self'; worker-src 'none'
+content-type
+application/json
+date
+Mon, 16 Feb 2026 06:17:48 GMT
+expires
+Sun, 19 Nov 1978 05:00:00 GMT
+permissions-policy
+geolocation=(self "https://infoweb.newsbank.com"), microphone=()
+referrer-policy
+strict-origin-when-cross-origin
+server
+strict-transport-security
+max-age=31536000; preload
+via
+1.1 ece2a231e09716eb97b51099bf5928fe.cloudfront.net (CloudFront)
+x-amz-cf-id
+IM69_stPk3-lAb-6rQtFGU98T5OHH01i3YnyMLR_ABCvP5cLcwGNwQ==
+x-amz-cf-pop
+SYD62-P3
+x-cache
+Miss from cloudfront
+x-content-type-options
+nosniff
+x-content-type-options
+nosniff
+x-frame-options
+SAMEORIGIN
+accept
+application/json, text/javascript, */*; q=0.01
+accept-encoding
+gzip, deflate, br, zstd
+accept-language
+zh-AU,zh;q=0.9,en-AU;q=0.8,en;q=0.7,zh-CN;q=0.6
+connection
+keep-alive
+content-length
+436
+content-type
+application/x-www-form-urlencoded; charset=UTF-8
+cookie
+_gcl_au=1.1.2023199935.1771062615; _ga=GA1.4.53728004.1771062615; _gid=GA1.4.990706382.1771062615; AWSALB=t/P2GvgEuS7sHo3+lA35RB4zifu8iI0aFxdxIfaf6ktcRXaaiw8MPv9vF1vYK36YbEC7dyqEmBS1hj1Be4HHsP8rPwV///mQqhr+ZzwoGLX3ENaShZ6BDTeyn1/J; AWSALBCORS=t/P2GvgEuS7sHo3+lA35RB4zifu8iI0aFxdxIfaf6ktcRXaaiw8MPv9vF1vYK36YbEC7dyqEmBS1hj1Be4HHsP8rPwV///mQqhr+ZzwoGLX3ENaShZ6BDTeyn1/J; _hjSessionUser_1459581=eyJpZCI6ImIwNmI2ZmMwLTlkOTktNTkyNi05MWY3LTg1OWE0ODc1NWMxNyIsImNyZWF0ZWQiOjE3NzEwNjMyNzkxNjksImV4aXN0aW5nIjp0cnVlfQ==; _ga_795XZ9TLZF=GS2.1.s1771066629$o2$g0$t1771066629$j60$l0$h0; _gid=GA1.3.188659260.1771153379; _ga=GA1.1.53728004.1771062615; _ga_BRQRFTNG3T=GS2.1.s1771153379$o1$g1$t1771153409$j30$l0$h0; _ga_J47TF6WL48=GS2.4.s1771203912$o6$g1$t1771203918$j54$l0$h0; okta-token-storage__idToken=%7B%22idToken%22%3A%22eyJraWQiOiJzbHcwMS0wX2NRbHp6UVMxakVsaGVCdkhCX0xIOTUwdnlGZ0laQ3BLYzZBIiwiYWxnIjoiUlMyNTYifQ.eyJzdWIiOiIwMHU1OTVpZ3o5TFJQWUFEWDNsNyIsIm5hbWUiOiJKdW5qaWUgQ2hlbiIsImVtYWlsIjoiZ3plcmljMjAwMEBnbWFpbC5jb20iLCJ2ZXIiOjEsImlzcyI6Imh0dHBzOi8vc3NvLnNsLm5zdy5nb3YuYXUvb2F1dGgyL2RlZmF1bHQiLCJhdWQiOiIwb2E1M3pvOW95QUdjZ3lXWjNsNyIsImlhdCI6MTc3MTIyMTgwMCwiZXhwIjoxNzcxMjI1NDAwLCJqdGkiOiJJRC5OOGZKdVdmVGFqNEt2aTB6UHJRT3p2VkY3NVpYRDA5YUMyN0Y1TnVUTUo4IiwiYW1yIjpbInB3ZCJdLCJpZHAiOiIwMG9ka2F2bG4xMXRJMVZTSzNsNiIsIm5vbmNlIjoid2pvNkFMdXViWnUxdURSZGZ3R1l5NXk2SnJ1MGcxeHpCcTVYbk5URDdId2FSN0t4cHdCRTdSWTZUQWtOc3Y1UCIsInByZWZlcnJlZF91c2VybmFtZSI6Imd6ZXJpYzIwMDBAZ21haWwuY29tIiwiYXV0aF90aW1lIjoxNzcxMjIxNzk5LCJhdF9oYXNoIjoiS29idzNIT3BRZXdESy1WZlM5a2tpdyIsImNvdW50cnkiOiJBVSIsImNpdHkiOiJCYXVsa2hhbSBIaWxscyAiLCJjYXJkTGV2ZWwiOiJCbHVlIENhcmQgTlNXIiwiY2FyZF9iYXJjb2RlIjoiNzgyMzg2OSIsInN0cmVldEFkZHJlc3MyIjoiICAgIiwiYWRkcmVzc0lEIjoiIiwiZXhwaXJ5RGF0ZSI6IjIwMjctMDUtMzAiLCJwcmltYXJ5UGhvbmUiOiIiLCJkeW5hbWljc0dVSUQiOiJjNzIyZjg4Yy1iOWMwLWVmMTEtYjhlOS0wMDIyNDg5MzNhZjEiLCJzdHJlZXRBZGRyZXNzIjoiMSBLYXJlZWxhIFJvYWQiLCJiYXJjb2RlT25seSI6IiIsImNvbnN0aXR1ZW5jeUNvZGUiOiI4NzBkYWM2Mi1lMGI5LWYwMTEtYmJkMi02MDQ1YmRjNDU2YmIiLCJwb3N0YWxfY29kZSI6IjIxNTMiLCJyZWdpb24iOiJOU1cifQ.GwsubBSzxZSzNUJIGvNslg3tWCYYiY0BBw28o0gu-iYJmRFg5h8cHeG68TAeohR_BQznIICNG46079NldXcymmhljIqyZFAotd5tHiH7LVDPUtyKrzs4ggFYC8hZS1Kyzlg5ufaOy7IsbhPI94xYOMgIelOAfbn_dfkrXgxlOHmbmEwswvdiNmsWfzewT0R5V8_TWW8KeEMnErhOCarbR88t-9LZfK6WEeQfgGPgW_iyovMqq7fD85qgeU6Glf_wweVQ1ApRrnYHj6HfRjRIBGc2sObBlFQzzgQUJmkUl8i2OhGVft0gtaabTvCxXFNAhTnqbdr5gPpKdiU9gUfatg%22%2C%22expiresAt%22%3A1771225400%7D; okta-token-storage__accessToken=%7B%22accessToken%22%3A%22eyJraWQiOiJzbHcwMS0wX2NRbHp6UVMxakVsaGVCdkhCX0xIOTUwdnlGZ0laQ3BLYzZBIiwiYWxnIjoiUlMyNTYifQ.eyJ2ZXIiOjEsImp0aSI6IkFULkVWRnRLQWZiTXFCYV9LLXktMHY4RzZTR0NPaGxtN1BseThRU29lZU5xaTQub2FycjdvbG52ZUtPV05QejgzbDYiLCJpc3MiOiJodHRwczovL3Nzby5zbC5uc3cuZ292LmF1L29hdXRoMi9kZWZhdWx0IiwiYXVkIjoiYXBpOi8vZGVmYXVsdCIsImlhdCI6MTc3MTIyMTgwMCwiZXhwIjoxNzcxMjI1NDAwLCJjaWQiOiIwb2E1M3pvOW95QUdjZ3lXWjNsNyIsInVpZCI6IjAwdTU5NWlnejlMUlBZQURYM2w3Iiwic2NwIjpbIm9rdGEubXlBY2NvdW50LnByb2ZpbGUucmVhZCIsInByb2ZpbGUiLCJvZmZsaW5lX2FjY2VzcyIsImVtYWlsIiwib3BlbmlkIiwib2t0YS5teUFjY291bnQucHJvZmlsZS5tYW5hZ2UiXSwiYXV0aF90aW1lIjoxNzcxMjIxNzk5LCJzdWIiOiJnemVyaWMyMDAwQGdtYWlsLmNvbSIsImNhcmRfYmFyY29kZSI6Ijc4MjM4NjkiLCJncm91cHMiOlsiRXZlcnlvbmUiLCJTTE5TVyBNZW1iZXJzIiwiU0xOU1cgTWVtYmVycyBCbHVlIE5TVyJdfQ.le5NVnLxoOD_vvH7wwvkLZoGoORvkpFfbvnigOeWiMMGGu_UX1RabvwAIQ-MpEx1V4eVnkx_034m21Gw9aSgBNzP1Ga7KZxn8LdmcikhXMgqRnjf6cwHfbGv0nooot7ovELu3etS74ZXRd73VtjlQVGgkQw9obxF3mzA0QISDvJIbP5_7wHrzkVbQiaWMRgvK1j6b6ZQUko834rJ6E95CHYHUfGlAtSzRNg-k8zgfbEOabZAO7n6o7W9Dos43YQmp9c0JmpNKbxXjfE1nKA_9X3AyB7msIVYhxtAuN7gTyFPiSxxGYnP2-atd-7zF9pogFD8zXR-lMxPbcKZZLsJRw%22%2C%22expiresAt%22%3A1771225400%7D; okta-token-storage__refreshToken=%7B%22refreshToken%22%3A%22wXHZpMOxOQLU0PpZm6EGu69S2Ifu4j-KIROZ9ElfJqY%22%2C%22expiresAt%22%3A1771225400%7D; ezproxy=o90ZFTlJi5OASJv; ezproxyl=o90ZFTlJi5OASJv; ezproxyn=o90ZFTlJi5OASJv; _ga_CYHFMM592Q=GS2.4.s1771221781$o7$g1$t1771221804$j37$l0$h1436707141; _ga_7176Y7PLLT=GS2.4.s1771221796$o4$g1$t1771221804$j52$l0$h937489267; nbzustat=%2Fapps%2Fnews%2Fresults%3Fp%3DAWGLNB%26t%3D%26sort%3DYMD_date%253AD%26hide_duplicates%3D2%26fld-base-0%3Dalltext%26maxresults%3D60%26val-base-0%3DPenfolds%2527%2520grapes%2520of%2520wrath%2Aco_sc_return; _ga_VR37SQR64F=GS2.1.s1771221805$o13$g1$t1771222383$j45$l0$h0; aws-waf-token=31f15158-1326-4be8-802b-a4e0bc9ace27:BwoAkDcqkxVdAQAA:JftBKYVzfw8CB1Ow9VSEpFn4d15rZGYBZer60Bh6CWD5OfoCeN4g2m10PjFGiAzu6UCeU/F5+R8qFXSugp1oLH1/yz21HCHQVcGzIVn9umZJcp8ncxqfP6k/DCzaKuQLG1hB+sx1mzHDQZDjzlUAkiOv9QTORc6qU75y8aLRykTGa0XoViu38Z9RQDPrULF241rJPf9sALbEgBn/Tyk2Y4cSaw+zJG5WVA7BZMIkdflFdk8Ew2UxjlnRHSpfRmIPgxqzGLckCFWpLSEGiapaEorVI7CVtRDDsAmiRbeXLfzL
+host
+infoweb-newsbank-com.ezproxy.sl.nsw.gov.au
+origin
+https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au
+referer
+https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/results?p=AWGLNB&hide_duplicates=2&fld-base-0=alltext&sort=YMD_date%3AD&maxresults=60&val-base-0=Treasury%20wine%20Penfolds&t=favorite%3AAFRWAFRN%21Australian%2520Financial%2520Review%2520Collection
+sec-ch-ua
+"Not(A:Brand";v="8", "Chromium";v="144", "Google Chrome";v="144"
+sec-ch-ua-mobile
+?0
+sec-ch-ua-platform
+"Windows"
+sec-fetch-dest
+empty
+sec-fetch-mode
+cors
+sec-fetch-site
+same-origin
+user-agent
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36
+x-requested-with
+XMLHttpRequest
