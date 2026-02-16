@@ -270,31 +270,51 @@ class NewsBankAPIDownloader:
         """从HTML中提取文章的docref和preview"""
         articles = []
         
-        # 匹配文章块 - 使用更宽松的模式
-        # 查找包含preview-first-paragraph的文章元素
-        preview_pattern = r'<article[^>]*>.*?preview-first-paragraph.*?</article>'
+        # 匹配文章块 - 使用更宽的范围：search-hits__hit__inner
+        preview_pattern = r'<div class="search-hits__hit__inner"[^>]*>.*?preview-first-paragraph.*?</div>\s*</div>\s*</div>'
         article_matches = re.findall(preview_pattern, html_content, re.DOTALL)
         
-        for article_html in article_matches:
-            # 提取docref
-            docref_match = re.search(r'data-doc-id="([^"]+)"', article_html)
-            doc_id = docref_match.group(1) if docref_match else ''
+        print(f"  [调试] 从HTML中找到 {len(article_matches)} 个包含preview的文章块")
+        
+        for idx, article_html in enumerate(article_matches):
+            # 提取docref - 从href中提取
+            doc_id = ''
             
-            # 提取preview
+            # 方法1: 从href中提取 docref=news/xxx
+            docref_match = re.search(r'docref=(news/[^&"]+)', article_html)
+            if docref_match:
+                doc_id = docref_match.group(1)
+            
+            # 方法2: 如果方法1没有，尝试data-doc-id
+            if not doc_id:
+                docref_match = re.search(r'data-doc-id="([^"]+)"', article_html)
+                if docref_match:
+                    doc_id = 'news/' + docref_match.group(1)
+            
+            if not doc_id:
+                print(f"  [调试] 文章{idx+1} 未能提取到docref")
+                continue
+            
+            # 提取preview - 正确匹配<div class="preview-first-paragraph">到</div>之间的内容
             preview = ""
             preview_match = re.search(
-                r'preview-first-paragraph[^>]*>([^<]+)',
+                r'preview-first-paragraph[^>]*>(.*?)</div>',
                 article_html, re.DOTALL
             )
             if preview_match:
-                preview = preview_match.group(1).strip()[:200]
+                preview = preview_match.group(1).strip()
+                # 清理HTML标签，获取纯文本
+                preview = re.sub(r'<[^>]+>', '', preview)
+                preview = preview.strip()[:200]
+                print(f"  [调试] 文章{idx+1} docref={doc_id}, preview={preview[:30]}...")
             
             if doc_id:
                 articles.append({
-                    'docref': f'news/{doc_id}',
+                    'docref': doc_id,
                     'preview': preview
                 })
         
+        print(f"  [调试] 提取到 {len(articles)} 个preview数据")
         return articles
     
     def _extract_article_ids_from_page(self, html_content: str) -> List[str]:
@@ -2286,21 +2306,37 @@ class NewsBankAPIDownloader:
                 print(f"  [未捕获] 未捕获到payload，从页面提取...")
                 article_metadata = await self._extract_selected_articles_metadata(page)
             
-            # 补充 preview（如果从payload解析的没有preview）
+            # 从HTML中提取preview并补充到元数据中
             if article_metadata:
-                has_preview = any(art.get('preview') for art in article_metadata)
-                if not has_preview:
-                    print(f"  [补充] 从HTML提取preview...")
-                    html_content = await page.content()
-                    html_articles = self._extract_preview_from_html(html_content)
-                    if html_articles:
-                        for art in article_metadata:
-                            docref = art.get('docref', '')
-                            for html_art in html_articles:
-                                if html_art.get('docref') == docref:
-                                    art['preview'] = html_art.get('preview', '')
-                                    break
-                        print(f"  [补充] 为 {len(article_metadata)} 篇文章补充了preview")
+                print(f"  [补充] 从HTML提取preview...")
+                html_content = await page.content()
+                html_articles = self._extract_preview_from_html(html_content)
+                
+                # 打印payload中的docref用于对比
+                print(f"  [调试] Payload中的docref (前5个):")
+                for i, art in enumerate(article_metadata[:5]):
+                    print(f"    {i+1}: {art.get('docref', 'N/A')}")
+                
+                # 打印HTML中的docref用于对比
+                print(f"  [调试] HTML中的docref (前5个):")
+                for i, ha in enumerate(html_articles[:5]):
+                    print(f"    {i+1}: {ha.get('docref', 'N/A')}")
+                
+                if html_articles:
+                    matched_count = 0
+                    for art in article_metadata:
+                        docref = art.get('docref', '')
+                        for html_art in html_articles:
+                            if html_art.get('docref') == docref:
+                                # 如果HTML中有preview，则覆盖payload中的preview（HTML的更准确）
+                                html_preview = html_art.get('preview', '')
+                                if html_preview:
+                                    art['preview'] = html_preview
+                                    matched_count += 1
+                                break
+                    print(f"  [补充] 为 {matched_count} 篇文章补充了preview")
+                else:
+                    print(f"  [警告] 未从HTML提取到preview")
             
             if not article_metadata:
                 print(f"  [第 {page_num}] 未获取到元数据")

@@ -1,0 +1,62 @@
+<div class="search-hits__hit__inner">
+      <div class="search-hits__hit__details">
+
+        <h3 class="search-hits__hit__title search-hits__title">
+          <a href="/apps/news/document-view?p=AWGLNB&amp;t=favorite%3AAFRWAFRN%21Australian%2520Financial%2520Review%2520Collection&amp;sort=YMD_date%3AD&amp;page=1&amp;hide_duplicates=0&amp;fld-base-0=alltext&amp;maxresults=40&amp;val-base-0=treasury%20wine&amp;offset=63&amp;docref=news/1A53351E652D0378"><span class="element-invisible">Go to the document viewer for </span>In Pictures: the AFR's best of 2025 - The year was marked by elections, algal blooms, blockbuster art exhibitions, tariff chaos, AUKUS and the Bondi shootings. A look back on 2025.</a></h3>
+
+        <ul class="search-hits__hit__meta">
+                      <li class="search-hits__hit__meta__item search-hits__hit__meta__item--display-date">
+              December 22, 2025            </li>
+                                <li class="search-hits__hit__meta__item search-hits__hit__meta__item--source">
+              
+          
+            Australian Financial Review, The: Web Edition Articles (Australia)
+          
+                    </li>
+                                                                                            <li class="search-hits__hit__meta__item search-hits__hit__meta__item--readability">
+              
+                     Lexile: 1360, grade level(s): 
+                        &gt;12
+                     
+                              </li>
+                  </ul>
+              </div>
+      <div class="search-hits__hit__preview">
+        <div class="search-hits__hit__preview__inner search-hits__hit__preview__inner--type-web-only-source">
+          <a href="/apps/news/document-view?p=AWGLNB&amp;t=favorite%3AAFRWAFRN%21Australian%2520Financial%2520Review%2520Collection&amp;sort=YMD_date%3AD&amp;page=1&amp;hide_duplicates=0&amp;fld-base-0=alltext&amp;maxresults=40&amp;val-base-0=treasury%20wine&amp;offset=63&amp;docref=news/1A53351E652D0378" title="Go to the document viewer for In Pictures: the AFR's best of 2025 - The year was marked by elections, algal blooms, blockbuster art exhibitions, tariff chaos, AUKUS and the Bondi shootings. A look back on 2025." tabindex="-1"><div class="search-hit-preview">
+                     <div class="preview-dynamic">
+                        <b>...</b>  
+                        <b>Treasury</b> 
+                        <b>Wine</b> Estates CEO Tim Ford. Photo: Eamon  <b>...</b>  
+                        <b>Wine</b> Estates CEO Tim Ford. Photo: Eamon  <b>...</b>
+                     </div>
+                     <div class="preview-first-paragraph">Michele Bullock, governor of the Reserve Bank of Australia, and Lisa Annese, CEO at Chief Executive Women at Crown Towers, Melbourne. Photo: Louis Trerise Linda Gregory, founder of Scoopanova. Photo: Louie Douvis
+ Treasury Wine Estates CEO Tim Ford. Photo: Eamon Gallagher
+ QIC Real Estate managing director Deborah Coakley wants the sovereign wealth fund to go beyond being known as a shopping centre owner. Photo: Oscar Colman
+ Former ABC chairwoman Ita Buttrose leaves the</div>
+                  </div></a>        </div><div class="search-hit-extended-preview-button__wrapper"><button data-hit-id="search-hits__hit--64" class="search-hit-extended-preview-button"><svg width="20px" height="14px" viewBox="0 0 20 14" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <g mask="url(#icon-preview-mask)" fill="#007BC1" fill-rule="nonzero">
+            <path d="M10,0.75 C5.83333333,0.75 2.275,3.34166667 0.833333333,7 C2.275,10.6583333 5.83333333,13.25 10,13.25 C14.1666667,13.25 17.725,10.6583333 19.1666667,7 C17.725,3.34166667 14.1666667,0.75 10,0.75 Z M10,11.1666667 C7.7,11.1666667 5.83333333,9.3 5.83333333,7 C5.83333333,4.7 7.7,2.83333333 10,2.83333333 C12.3,2.83333333 14.1666667,4.7 14.1666667,7 C14.1666667,9.3 12.3,11.1666667 10,11.1666667 Z M10,4.5 C8.61666667,4.5 7.5,5.61666667 7.5,7 C7.5,8.3833333 8.61666667,9.5 10,9.5 C11.3833333,9.5 12.5,8.3833333 12.5,7 C12.5,5.61666667 11.3833333,4.5 10,4.5 Z"></path>
+            <path d="M10,0.75 C5.83333333,0.75 2.275,3.34166667 0.833333333,7 C2.275,10.6583333 5.83333333,13.25 10,13.25 C14.1666667,13.25 17.725,10.6583333 19.1666667,7 C17.725,3.34166667 14.1666667,0.75 10,0.75 Z M10,11.1666667 C7.7,11.1666667 5.83333333,9.3 5.83333333,7 C5.83333333,4.7 7.7,2.83333333 10,2.83333333 C12.3,2.83333333 14.1666667,4.7 14.1666667,7 C14.1666667,9.3 12.3,11.1666667 10,11.1666667 Z M10,4.5 C8.61666667,4.5 7.5,5.61666667 7.5,7 C7.5,8.3833333 8.61666667,9.5 10,9.5 C11.3833333,9.5 12.5,8.3833333 12.5,7 C12.5,5.61666667 11.3833333,4.5 10,4.5 Z"></path>
+        </g>
+    </g>
+</svg>
+Preview</button></div>
+      </div>
+      <div class="search-hits__hit__preview_extended" style="display: none;"><div class="search-hits__hit__preview_extended__arrow"></div>
+        <div class="search-hits__hit__preview_extended__inner search-hits__hit__meta__item--preview_extended search-hits__hit__preview_extended__inner--type-web-only-source">
+          <div class="search-hit-preview-extended" style="position: relative;"><div class="search-hit-preview-extended__top"><h3 class="search-hit-preview-extended__title">Article Preview</h3><button class="search-hit-preview-extended__close-button" aria-label="Close extended preview" data-hit-id="search-hits__hit--64">×</button></div>
+                     <div class="search-hit-preview-extended__body search-hit-preview-extended__body-ascii" data-hit-id="search-hits__hit--64">Michele Bullock, governor of the Reserve Bank of Australia, and Lisa Annese, CEO at Chief Executive Women at Crown Towers, Melbourne. Photo: Louis Trerise<br>
+                        <br>Linda Gregory, founder of Scoopanova. Photo: Louie Douvis
+<br>
+                        <br>
+                        <b>Treasury</b> 
+                        <b>Wine</b> Estates CEO Tim Ford. Photo: Eamon Gallagher
+<br>
+                        <br>QIC Real Estate managing director Deborah Coakley wants the sovereign wealth fund to go beyond being known as a shopping centre owner. Photo: Oscar Colman
+<br>
+                        <br>Former ABC chairwoman Ita Buttrose leaves the</div>
+                  <div class="search-hit-preview-extended__bottom"><button class="search-hit-preview-extended__view-doc-button" data-hit-id="search-hits__hit--64">View Document</button></div></div>        </div>
+      </div>
+    </div>

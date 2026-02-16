@@ -57,7 +57,7 @@ articles_smart/
 # Logs
 *.log
 logs/
-debug/
+#debug/
 
 # System files
 .DS_Store
