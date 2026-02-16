@@ -230,13 +230,13 @@ class NewsBankAPIDownloader:
                 pass
         return 0
     
-    def _build_page_url(self, base_url: str, page_num: int, first_page_maxresults: int = 60, subsequent_maxresults: int = 20) -> str:
+    def _build_page_url(self, base_url: str, page_num: int, first_page_maxresults: int = 60, subsequent_maxresults: int = 40) -> str:
         """
         构建分页URL
         
         根据翻页.txt的规律：
         - 第1页：offset=0, maxresults=60
-        - 第2页及以后：offset=63, maxresults=20, page=页码-1
+        - 第2页及以后：offset=63, maxresults=40, page=页码-1
         """
         if page_num == 1:
             # 第一页保持原样
