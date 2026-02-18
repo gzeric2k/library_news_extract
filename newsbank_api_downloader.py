@@ -2910,6 +2910,11 @@ class NewsBankAPIDownloader:
             
             print(f"  [调试] 开始解析 {len(article_blocks)} 个文章块...")
             
+            # 【修复】如果只有1个块且长度很小，说明分割失败，直接用完整response_body
+            if len(article_blocks) == 1 and len(article_blocks[0]) < 500:
+                print(f"  [调试] 文章块太短({len(article_blocks[0])}字符)，可能是分割失败，尝试直接解析完整响应")
+                article_blocks = [response_body]
+            
             # 解析每个文章块
             for i, html_snippet in enumerate(article_blocks):
                 article = self._parse_full_article_from_html(html_snippet, page_num, i+1)
@@ -3139,19 +3144,31 @@ class NewsBankAPIDownloader:
         except Exception:
             return None
     
-    async def scan_all_pages(self, page: Page, base_url: str) -> List[ArticleInfo]:
+    async def scan_all_pages(self, page: Page, base_url: str, keyword: Optional[str] = None) -> List[ArticleInfo]:
         """
         扫描所有页面的文章
         
         新流程：
         1. 翻完所有页，只收集元数据（不调用下载API）
         2. 筛选 news/
-        3. 用户确认
-        4. 调用下载API
+        3. 保存元数据到JSON（用户可选择稍后下载）
+        4. 用户确认
+        5. 调用下载API
         """
         print("\n" + "=" * 70)
         print("开始扫描文章列表")
         print("=" * 70)
+        
+        # 如果没有提供关键字，尝试从URL中提取
+        if not keyword:
+            try:
+                parsed = urlparse(base_url)
+                query_params = parse_qs(parsed.query)
+                keyword = query_params.get('val-base-0', ['unknown'])[0]
+                # URL解码
+                keyword = unquote(keyword)
+            except:
+                keyword = "unknown"
         
         all_metadata = []  # 收集所有页的元数据
         current_url = base_url
@@ -3203,7 +3220,13 @@ class NewsBankAPIDownloader:
             print("[错误] 没有找到任何 news/ 开头的记录")
             return []
         
-        # 步骤2: 显示文章列表供用户选择
+        # 步骤2: 保存元数据到JSON（用户可选择稍后下载）
+        print("\n[保存] 正在保存元数据到JSON...")
+        json_path = await self._save_article_metadata_to_json(all_metadata, keyword)
+        print(f"[保存] 元数据已保存到: {json_path}")
+        print(f"[提示] 如需稍后下载，可使用: python newsbank_api_downloader.py --from-metadata \"{json_path}\"")
+        
+        # 步骤3: 显示文章列表供用户选择
         print(f"\n[文章列表] 共 {len(filtered_metadata)} 篇文章:")
         for i, art in enumerate(filtered_metadata[:20], 1):
             title = art.get('title', 'N/A')[:50]
@@ -3214,7 +3237,7 @@ class NewsBankAPIDownloader:
         if len(filtered_metadata) > 20:
             print(f"  ... 还有 {len(filtered_metadata) - 20} 篇文章")
         
-        # 步骤3: 让用户选择
+        # 步骤4: 让用户选择
         print(f"\n请选择要下载的文章:")
         print("  - 输入 'all' 下载全部")
         print("  - 输入数字选择（例如: 1,5,10 或 1-20）")
@@ -3255,7 +3278,7 @@ class NewsBankAPIDownloader:
         
         print(f"\n[确认] 即将下载 {len(selected_metadata)} 篇文章")
         
-        # 步骤4: 调用下载API
+        # 步骤5: 调用下载API
         print("\n[下载] 开始下载文章...")
         p_param = "AWGLNB"  # 默认值
         
@@ -3524,8 +3547,14 @@ Full Text:
                 
                 print(f"页面标题: {await page.title()}")
                 
+                # 提取搜索关键字
+                parsed_url = urlparse(url)
+                query_params = parse_qs(parsed_url.query)
+                keyword = query_params.get('val-base-0', ['unknown'])[0]
+                keyword = unquote(keyword)
+                
                 # 扫描所有页面
-                self.articles = await self.scan_all_pages(page, url)
+                self.articles = await self.scan_all_pages(page, url, keyword)
                 
                 if not self.articles:
                     print("\n[警告] 未找到任何文章")

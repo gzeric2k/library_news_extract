@@ -48,6 +48,7 @@ cookies/
 articles/
 articles*/
 articles_ai/
+articles_api/
 articles_full/
 articles_smart/
 *.db
