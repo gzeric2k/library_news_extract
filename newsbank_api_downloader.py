@@ -69,6 +69,248 @@ class ArticleInfo:
         return asdict(self)
 
 
+@dataclass
+class RequestRecord:
+    """单次请求记录"""
+    timestamp: float  # Unix时间戳
+    url: str
+    method: str
+    status_code: int
+    response_time: float  # 响应时间（秒）
+    success: bool
+    error: Optional[str] = None
+    request_type: str = "api"  # api, page, download
+
+
+class TrafficLogger:
+    """
+    NewsBank 流量记录器
+    
+    功能：
+    1. 记录每次API/页面请求
+    2. 统计请求频率
+    3. 检测限流风险
+    4. 输出流量报告
+    """
+    
+    # 限流阈值配置
+    MAX_REQUESTS_PER_MINUTE = 30  # 每分钟最大请求数
+    MAX_REQUESTS_PER_SECOND = 2   # 每秒最大请求数
+    RATE_WARNING_THRESHOLD = 0.8  # 达到80%阈值时警告
+    
+    def __init__(self, output_dir: str = "logs"):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.records: List[RequestRecord] = []
+        self.session_start = time.time()
+        self.last_request_time = 0
+        self.min_request_interval = 0.5  # 最小请求间隔（秒）
+        
+        # 限流警告状态
+        self.rate_limit_warned = False
+        self.blocked_warned = False
+    
+    def record_request(self,
+                       url: str,
+                       method: str = "GET",
+                       status_code: int = 200,
+                       response_time: float = 0,
+                       success: bool = True,
+                       error: Optional[str] = None,
+                       request_type: str = "api"):
+        """记录一次请求"""
+        record = RequestRecord(
+            timestamp=time.time(),
+            url=url,
+            method=method,
+            status_code=status_code,
+            response_time=response_time,
+            success=success,
+            error=error,
+            request_type=request_type
+        )
+        self.records.append(record)
+        
+        # 检查是否需要警告
+        self._check_rate_limit()
+        
+        # 更新最后请求时间
+        self.last_request_time = record.timestamp
+        
+        return record
+    
+    def _check_rate_limit(self):
+        """检查是否接近限流阈值"""
+        now = time.time()
+        
+        # 检查最近1分钟的请求数
+        recent_records = [r for r in self.records if now - r.timestamp < 60]
+        requests_per_minute = len(recent_records)
+        
+        # 检查最近1秒的请求数
+        very_recent = [r for r in self.records if now - r.timestamp < 1]
+        requests_per_second = len(very_recent)
+        
+        # 每分钟限流警告
+        if requests_per_minute >= self.MAX_REQUESTS_PER_MINUTE * self.RATE_WARNING_THRESHOLD:
+            if not self.rate_limit_warned:
+                print(f"\n[⚠️  流量警告] 最近1分钟请求数: {requests_per_minute}")
+                print(f"  [建议] 建议降低请求频率，增加延迟")
+                self.rate_limit_warned = True
+        
+        # 每秒限流警告
+        if requests_per_second >= self.MAX_REQUESTS_PER_SECOND * self.RATE_WARNING_THRESHOLD:
+            print(f"\n[⚠️  流量警告] 最近1秒请求数: {requests_per_second}")
+            print(f"  [建议] 请求过快，请增加延迟")
+        
+        # 检查是否被阻止（429状态码）
+        recent_429 = [r for r in recent_records if r.status_code == 429]
+        if recent_429 and not self.blocked_warned:
+            print(f"\n[🚫 限流警告] 检测到 {len(recent_429)} 次 429 状态码（请求过于频繁）")
+            print(f"  [建议] 请等待几分钟后重试，或增加请求延迟")
+            self.blocked_warned = True
+    
+    def should_wait(self) -> bool:
+        """检查是否需要等待（基于请求频率）"""
+        now = time.time()
+        
+        # 检查最近1秒的请求数
+        very_recent = [r for r in self.records if now - r.timestamp < 1]
+        if len(very_recent) >= self.MAX_REQUESTS_PER_SECOND:
+            return True
+        
+        # 检查最近1分钟的请求数
+        recent = [r for r in self.records if now - r.timestamp < 60]
+        if len(recent) >= self.MAX_REQUESTS_PER_MINUTE * 0.9:
+            return True
+        
+        return False
+    
+    async def wait_if_needed(self):
+        """如果请求过于频繁，等待后再继续"""
+        while self.should_wait():
+            wait_time = 0.5
+            print(f"  [等待] 请求频率过高，等待 {wait_time} 秒...")
+            await asyncio.sleep(wait_time)
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取流量统计"""
+        if not self.records:
+            return {
+                "total_requests": 0,
+                "successful_requests": 0,
+                "failed_requests": 0,
+                "api_requests": 0,
+                "page_requests": 0,
+                "requests_per_minute": 0,
+                "average_response_time": 0,
+                "session_duration": 0,
+                "status_codes": {},
+                "rate_limit_warnings": False,
+                "blocked_warnings": False
+            }
+        
+        now = time.time()
+        session_duration = now - self.session_start
+        
+        # 按类型统计
+        api_requests = [r for r in self.records if r.request_type == "api"]
+        page_requests = [r for r in self.records if r.request_type == "page"]
+        
+        # 成功/失败
+        successful = [r for r in self.records if r.success]
+        failed = [r for r in self.records if not r.success]
+        
+        # 响应时间
+        response_times = [r.response_time for r in self.records if r.response_time > 0]
+        avg_response_time = sum(response_times) / len(response_times) if response_times else 0
+        
+        # 每分钟请求数
+        requests_per_minute = len(self.records) / (session_duration / 60) if session_duration > 0 else 0
+        
+        # 状态码统计
+        status_codes = {}
+        for r in self.records:
+            status_codes[r.status_code] = status_codes.get(r.status_code, 0) + 1
+        
+        return {
+            "total_requests": len(self.records),
+            "successful_requests": len(successful),
+            "failed_requests": len(failed),
+            "api_requests": len(api_requests),
+            "page_requests": len(page_requests),
+            "requests_per_minute": round(requests_per_minute, 2),
+            "average_response_time": round(avg_response_time, 3),
+            "session_duration": round(session_duration, 1),
+            "status_codes": status_codes,
+            "rate_limit_warnings": self.rate_limit_warned,
+            "blocked_warnings": self.blocked_warned
+        }
+    
+    def print_stats(self):
+        """打印流量统计报告"""
+        stats = self.get_stats()
+        
+        print("\n" + "=" * 60)
+        print("📊 NewsBank 流量报告")
+        print("=" * 60)
+        print(f"  会话时长: {stats['session_duration']} 秒")
+        print(f"  总请求数: {stats['total_requests']}")
+        print(f"    - API请求: {stats['api_requests']}")
+        print(f"    - 页面请求: {stats['page_requests']}")
+        print(f"  成功/失败: {stats['successful_requests']} / {stats['failed_requests']}")
+        print(f"  平均请求频率: {stats['requests_per_minute']} 请求/分钟")
+        print(f"  平均响应时间: {stats['average_response_time']} 秒")
+        
+        if stats['status_codes']:
+            print(f"  状态码分布:")
+            for code, count in sorted(stats['status_codes'].items()):
+                print(f"    {code}: {count}")
+        
+        if stats['rate_limit_warnings']:
+            print(f"  ⚠️  曾触发限流警告")
+        if stats['blocked_warnings']:
+            print(f"  🚫 曾被阻止访问")
+        
+        print("=" * 60)
+    
+    def save_log(self, filename: str = None):
+        """保存流量日志到文件"""
+        if not filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"traffic_log_{timestamp}.json"
+        
+        filepath = self.output_dir / filename
+        
+        stats = self.get_stats()
+        
+        log_data = {
+            "session_start": datetime.fromtimestamp(self.session_start).isoformat(),
+            "session_end": datetime.now().isoformat(),
+            "stats": stats,
+            "records": [
+                {
+                    "timestamp": datetime.fromtimestamp(r.timestamp).isoformat(),
+                    "url": r.url[:100] + "..." if len(r.url) > 100 else r.url,
+                    "method": r.method,
+                    "status_code": r.status_code,
+                    "response_time": r.response_time,
+                    "success": r.success,
+                    "error": r.error,
+                    "request_type": r.request_type
+                }
+                for r in self.records
+            ]
+        }
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(log_data, f, ensure_ascii=False, indent=2)
+        
+        print(f"\n[💾 流量日志已保存]: {filepath}")
+        return filepath
+
+
 class NewsBankAPIDownloader:
     """NewsBank API 下载器 - 直接调用API获取文章"""
     
@@ -85,6 +327,9 @@ class NewsBankAPIDownloader:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.cookie_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 流量记录器
+        self.traffic_logger = TrafficLogger(output_dir=str(self.output_dir))
         
         # 统计
         self.stats = {
@@ -104,7 +349,35 @@ class NewsBankAPIDownloader:
         delay = seconds if seconds else self.request_delay
         # 添加随机波动 (±20%)，模拟人类行为
         jitter = delay * 0.2 * (random.random() * 2 - 1)
+        
+        # 检查是否需要额外等待
+        await self.traffic_logger.wait_if_needed()
+        
         await asyncio.sleep(delay + jitter)
+    
+    def _record_page_access(self, url: str, success: bool = True, status_code: int = 200, error: str = None):
+        """记录页面访问"""
+        self.traffic_logger.record_request(
+            url=url,
+            method="GET",
+            status_code=status_code,
+            success=success,
+            error=error,
+            request_type="page"
+        )
+    
+    def _record_api_request(self, url: str, method: str = "POST", status_code: int = 200, 
+                           response_time: float = 0, success: bool = True, error: str = None):
+        """记录API请求"""
+        self.traffic_logger.record_request(
+            url=url,
+            method=method,
+            status_code=status_code,
+            response_time=response_time,
+            success=success,
+            error=error,
+            request_type="api"
+        )
     
     async def check_login(self, context: BrowserContext) -> bool:
         """检查登录状态"""
@@ -230,7 +503,7 @@ class NewsBankAPIDownloader:
                 pass
         return 0
     
-    def _build_page_url(self, base_url: str, page_num: int, first_page_maxresults: int = 60, subsequent_maxresults: int = 40) -> str:
+    def _build_page_url(self, base_url: str, page_num: int, first_page_maxresults: int = 60, subsequent_maxresults: int = 20) -> str:
         """
         构建分页URL
         
@@ -665,14 +938,15 @@ class NewsBankAPIDownloader:
         Returns:
             保存的文件路径
         """
-        # 筛选处理：只保留 docref 以 "news/" 开头的记录
+        # 筛选处理：只保留 docref 以 "news/" 开头的记录（过滤掉 image/ 等非文章记录）
         filtered_metadata = [
             art for art in article_metadata 
             if art.get('docref', '').startswith('news/')
         ]
         
         if len(filtered_metadata) < len(article_metadata):
-            print(f"  [筛选] 过滤掉 {len(article_metadata) - len(filtered_metadata)} 条非 news/ 开头的记录")
+            removed_count = len(article_metadata) - len(filtered_metadata)
+            print(f"  [筛选] 过滤掉 {removed_count} 条非 news/ 开头的记录")
             print(f"  [筛选] 保留 {len(filtered_metadata)} 条记录")
         
         # 如果筛选后没有有效记录，发出警告
@@ -1974,43 +2248,77 @@ class NewsBankAPIDownloader:
         print("-" * 40)
         
         try:
-            # 从页面获取必要的参数
-            instance_id = await page.evaluate("""() => {
-                // 尝试从各种来源获取instance_id
-                const urlParams = new URLSearchParams(window.location.search);
-                return urlParams.get('instance_id') || 
-                       urlParams.get('i') || 
-                       document.querySelector('[data-instance-id]')?.dataset?.instanceId ||
-                       '';
-            }""")
+            # ===== 步骤1: SET 调用 =====
+            # 先调用 nb-cache-doc/js/set 告诉服务器要下载哪些文章
+            set_url = "https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/nb-cache-doc/js/set"
             
-            # 构建docs JSON数组
-            docs_json = json.dumps(article_metadata[:100])  # 最多100篇
+            # 过滤只保留 news/ 开头的文章
+            valid_articles = [a for a in article_metadata if a.get('docref', '').startswith('news/')]
             
-            # 构建完整的payload
-            # 根据实际观察到的格式
-            form_data_parts = [
-                f"docs={quote(docs_json)}",
-                f"p={p_param}",
-                f"instance_id={instance_id}" if instance_id else "",
-                "action=download",
-                "format=html",
-                "load_pager=false"
-            ]
+            if not valid_articles:
+                print("[错误] 没有有效的文章")
+                return None
             
-            # 过滤空值
-            form_data_parts = [p for p in form_data_parts if p]
-            form_data_str = "&".join(form_data_parts)
+            # 构建docs JSON数组（只包含 news/ 开头的）
+            docs_json = json.dumps(valid_articles[:100])  # 最多100篇
             
+            # Set 请求的 payload
+            set_payload = f"docs={quote(docs_json)}&p={p_param}"
+            
+            print(f"\n[SET] 设置要下载的文章...")
+            print(f"  [请求] POST nb-cache-doc/js/set")
+            print(f"  [文章数] {len(valid_articles)}")
+            
+            try:
+                set_response = await page.context.request.post(
+                    set_url,
+                    data=set_payload,
+                    headers={
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json, text/javascript, */*; q=0.01',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Referer': page.url
+                    }
+                )
+                set_body = await set_response.text()
+                print(f"  [SET] 状态: {set_response.status}")
+            except Exception as set_err:
+                print(f"  [SET] 请求失败: {set_err}")
+                return None
+            
+            # ===== 步骤2: GET 调用 =====
+            # 然后调用 nb-multidocs/get 下载文章
+            print(f"\n[GET] 下载文章...")
             print(f"  [请求] POST {self.api_endpoint}")
-            print(f"  [文章数] {len(article_metadata)}")
-            print(f"  [Payload] {form_data_str[:200]}...")
             
-            # 发送请求
+            # 构建pdf_params
+            pdf_params_parts = [
+                "action=pdf",
+                "format=html",
+                "pdf_enabled=false",
+                "load_pager=false",
+                "maxresults=20"
+            ]
+            pdf_params = "&".join(pdf_params_parts)
+            
+            # Get 请求的 payload
+            get_payload_parts = [
+                f"p={p_param}",
+                "action=download",
+                "pdf_path=multidocs",
+                "maxresults=20",
+                f"pdf_params={quote(pdf_params)}",
+                "zustat_category_override=co_sc_pdf_download"
+            ]
+            get_payload = "&".join(get_payload_parts)
+            
+            print(f"  [Payload] {get_payload[:200]}...")
+            
+            # 发送GET请求
             try:
                 api_response = await page.context.request.post(
                     self.api_endpoint,
-                    data=form_data_str,
+                    data=get_payload,
                     headers={
                         'Content-Type': 'application/x-www-form-urlencoded',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -2054,7 +2362,7 @@ class NewsBankAPIDownloader:
                     } catch (e) {
                         return {status: 0, body: '', error: e.message};
                     }
-                }""", {"url": self.api_endpoint, "payload": form_data_str})
+                }""", {"url": self.api_endpoint, "payload": get_payload})
             
             if response and response.get('status') == 200:
                 print(f"  [成功] API调用成功 (状态: {response['status']})")
@@ -2150,20 +2458,55 @@ class NewsBankAPIDownloader:
             query_params = parse_qs(parsed_url.query)
             p_param = query_params.get('p', ['AWGLNB'])[0]
             
-            # 步骤1: 选中所有文章
-            print(f"  [步骤1] 选中所有文章...")
+            # 步骤1: 在选中文章之前，先设置好网络请求监听器
+            print(f"  [步骤1] 设置payload捕获监听器...")
+            captured_payloads = []
+            
+            async def handle_request(request):
+                url = request.url
+                if "nb-cache-doc" in url or "nb-multidocs" in url:
+                    try:
+                        post_data = request.post_data
+                        if post_data:
+                            if isinstance(post_data, bytes):
+                                post_data = post_data.decode('utf-8')
+                            if 'docs=' in post_data:
+                                captured_payloads.append({
+                                    'url': url,
+                                    'post_data': post_data,
+                                    'timestamp': time.time(),
+                                    'length': len(post_data)
+                                })
+                                print(f"  [捕获] 捕获到请求: {request.method} {url.split('/')[-1]}")
+                    except:
+                        pass
+            
+            # 设置监听器（关键：在点击之前就设置！）
+            page.on("request", handle_request)
+            
+            # 步骤2: 选中所有文章（点击会触发网络请求）
+            print(f"  [步骤2] 选中所有文章...")
             select_success = await self.select_all_articles(page)
             if select_success:
                 print(f"  [成功] 文章已选中")
             else:
                 print(f"  [警告] 选择文章可能未成功，继续尝试...")
             
-            # 等待一下确保选中状态生效
-            await asyncio.sleep(1)
+            # 等待捕获网络请求
+            print(f"  [等待] 等待捕获payload...")
+            for i in range(5):
+                await asyncio.sleep(0.5)
+                if captured_payloads:
+                    print(f"  [成功] 捕获到 {len(captured_payloads)} 个请求")
+                    break
             
-            # 步骤2: 尝试捕获实际的网络请求payload
-            print(f"  [步骤2] 捕获实际payload...")
-            captured_payload = await self._capture_selected_articles_payload(page)
+            # 获取捕获的payload
+            if captured_payloads:
+                captured_payload = captured_payloads[-1]['post_data']
+                print(f"  [成功] 捕获到payload ({len(captured_payload)} 字符)")
+            else:
+                captured_payload = None
+                print(f"  [警告] 未捕获到payload")
             
             # 用于存储文章元数据
             article_metadata = None
@@ -2342,16 +2685,24 @@ class NewsBankAPIDownloader:
                 print(f"  [第 {page_num}] 未获取到元数据")
                 return None
             
-            # 步骤3: 筛选 docref 以 "news/" 开头的记录
+            # 步骤3: 筛选 docref 以 "news/" 开头的记录（过滤掉 image/ 等非文章记录）
             filtered_by_docref = [
                 art for art in article_metadata 
                 if art.get('docref', '').startswith('news/')
             ]
             
             if len(filtered_by_docref) < len(article_metadata):
-                print(f"  [预筛选] 过滤掉 {len(article_metadata) - len(filtered_by_docref)} 条非 news/ 记录")
+                removed_count = len(article_metadata) - len(filtered_by_docref)
+                print(f"  [预筛选] 过滤掉 {removed_count} 条非 news/ 记录")
             
             print(f"  [完成] 获取到 {len(filtered_by_docref)} 篇元数据")
+            
+            # 清除选择，避免累积
+            try:
+                await self.remove_selection(page, "AWGLNB")
+            except:
+                pass
+            
             return filtered_by_docref
             
         except Exception as e:
@@ -2789,40 +3140,146 @@ class NewsBankAPIDownloader:
             return None
     
     async def scan_all_pages(self, page: Page, base_url: str) -> List[ArticleInfo]:
-        """扫描所有页面的文章"""
+        """
+        扫描所有页面的文章
+        
+        新流程：
+        1. 翻完所有页，只收集元数据（不调用下载API）
+        2. 筛选 news/
+        3. 用户确认
+        4. 调用下载API
+        """
         print("\n" + "=" * 70)
         print("开始扫描文章列表")
         print("=" * 70)
         
-        all_articles = []
+        all_metadata = []  # 收集所有页的元数据
         current_url = base_url
         
         for page_num in range(1, self.max_pages + 1):
-            # 获取当前页面的文章
-            articles = await self.fetch_articles_via_api(page, current_url, page_num)
+            # 获取当前页面的元数据（不调用下载API）
+            page_metadata = await self.fetch_page_metadata_only(page, page_num)
             
-            if not articles:
-                print(f"\n[第 {page_num} 页] 未找到文章，结束扫描")
+            if not page_metadata:
+                print(f"\n[第 {page_num} 页] 未获取到元数据，结束扫描")
                 break
             
-            all_articles.extend(articles)
+            all_metadata.extend(page_metadata)
             self.stats["total_pages"] += 1
-            self.stats["total_articles"] += len(articles)
             
-            print(f"\n[第 {page_num} 页] 成功获取 {len(articles)} 篇文章")
+            print(f"\n[第 {page_num} 页] 获取到 {len(page_metadata)} 条元数据")
+            print(f"  [累计] 目前共 {len(all_metadata)} 条元数据")
             
-            # 如果已经获取了100篇文章（maxresults=100），停止扫描
-            # 因为API一次最多返回100篇
-            if len(articles) >= 100:
-                print(f"  [信息] 已获取100篇文章，达到API限制，停止扫描")
-                break
-            
-            # 如果文章数量少于100，说明没有更多页面了
-            if len(articles) < 100:
-                print(f"  [信息] 只有 {len(articles)} 篇文章，已获取全部内容")
-                break
+            # 翻到下一页
+            if page_num < self.max_pages:
+                # 构建下一页URL
+                next_url = self._build_page_url(current_url, page_num + 1)
+                print(f"  [翻页] 前往第 {page_num + 1} 页...")
+                try:
+                    await page.goto(next_url, wait_until="networkidle", timeout=30000)
+                    await asyncio.sleep(2)
+                    current_url = next_url
+                except Exception as e:
+                    print(f"  [警告] 翻页失败: {e}")
+                    break
         
-        return all_articles
+        # ========== 翻页完成，开始处理 ==========
+        print("\n" + "=" * 70)
+        print(f"扫描完成，共获取 {len(all_metadata)} 条元数据")
+        print("=" * 70)
+        
+        # 步骤1: 筛选 news/ 开头的记录
+        filtered_metadata = [
+            art for art in all_metadata 
+            if art.get('docref', '').startswith('news/')
+        ]
+        
+        if len(filtered_metadata) < len(all_metadata):
+            removed_count = len(all_metadata) - len(filtered_metadata)
+            print(f"[筛选] 过滤掉 {removed_count} 条非 news/ 记录")
+            print(f"[筛选] 保留 {len(filtered_metadata)} 条记录")
+        
+        if not filtered_metadata:
+            print("[错误] 没有找到任何 news/ 开头的记录")
+            return []
+        
+        # 步骤2: 显示文章列表供用户选择
+        print(f"\n[文章列表] 共 {len(filtered_metadata)} 篇文章:")
+        for i, art in enumerate(filtered_metadata[:20], 1):
+            title = art.get('title', 'N/A')[:50]
+            docref = art.get('docref', 'N/A')
+            size = art.get('size', 0)
+            print(f"  {i:3}. [{size:>6} bytes] {title}")
+        
+        if len(filtered_metadata) > 20:
+            print(f"  ... 还有 {len(filtered_metadata) - 20} 篇文章")
+        
+        # 步骤3: 让用户选择
+        print(f"\n请选择要下载的文章:")
+        print("  - 输入 'all' 下载全部")
+        print("  - 输入数字选择（例如: 1,5,10 或 1-20）")
+        print("  - 输入 'cancel' 取消")
+        
+        user_input = input("\n请输入选择: ").strip().lower()
+        
+        if user_input == 'cancel':
+            print("已取消下载")
+            return []
+        
+        # 处理用户选择
+        if user_input == 'all':
+            selected_metadata = filtered_metadata
+        elif '-' in user_input:
+            try:
+                parts = user_input.split('-')
+                start = int(parts[0].strip())
+                end = int(parts[1].strip())
+                selected_metadata = filtered_metadata[start-1:end]
+                print(f"已选择第 {start} 到 {end} 篇")
+            except:
+                print("输入格式错误，将下载全部")
+                selected_metadata = filtered_metadata
+        else:
+            # 处理数字列表
+            try:
+                nums = [int(x) for x in user_input.replace(',', ' ').split() if x.isdigit()]
+                selected_metadata = [filtered_metadata[n-1] for n in nums if n <= len(filtered_metadata)]
+                print(f"已选择 {len(selected_metadata)} 篇文章")
+            except:
+                print("输入格式错误，将下载全部")
+                selected_metadata = filtered_metadata
+        
+        if not selected_metadata:
+            print("没有选择任何文章")
+            return []
+        
+        print(f"\n[确认] 即将下载 {len(selected_metadata)} 篇文章")
+        
+        # 步骤4: 调用下载API
+        print("\n[下载] 开始下载文章...")
+        p_param = "AWGLNB"  # 默认值
+        
+        response_data = await self._call_download_api_with_articles(page, selected_metadata, p_param)
+        
+        if not response_data or not response_data.get('body'):
+            print("[错误] 下载API调用失败")
+            return []
+        
+        # 步骤5: 解析响应
+        body = response_data['body']
+        print(f"  [调试] API响应长度: {len(body)} bytes")
+        
+        # 检查是否是PDF
+        if body.startswith('%PDF'):
+            print("  [警告] API返回PDF")
+            return []
+        
+        # 解析文章
+        articles = self._parse_api_response(body, page_num=1)
+        print(f"  [成功] 从API响应解析到 {len(articles)} 篇文章")
+        
+        self.stats["total_articles"] = len(articles)
+        return articles
     
     def display_articles(self, articles: List[ArticleInfo]):
         """显示文章列表"""
@@ -3122,6 +3579,12 @@ Full Text:
                     for error in self.stats["errors"][:5]:
                         print(f"  - {error}")
                 
+                # 打印流量报告
+                self.traffic_logger.print_stats()
+                
+                # 保存流量日志
+                self.traffic_logger.save_log()
+                
                 print("=" * 80)
                 
                 if not self.headless:
@@ -3303,10 +3766,9 @@ Full Text:
                     
                     if selected_metadata:
                         print(f"\n[开始] 下载选中的 {len(selected_metadata)} 篇文章...")
-                        # 重新创建浏览器上下文进行下载
-                        await context.close()
-                        await browser.close()
-                        await self.download_selected_articles(selected_metadata, self.output_dir)
+                        # 不关闭浏览器，直接在同一浏览器中下载
+                        # 这样可以保持会话状态和payload一致性
+                        await self.download_selected_articles_in_session(page, selected_metadata, self.output_dir, base_search_url)
                         return
                 
                 print(f"\n[完成] 元数据已保存到: {json_path}")
@@ -3406,6 +3868,163 @@ Full Text:
             finally:
                 await context.close()
                 await browser.close()
+
+    async def download_selected_articles_in_session(self, 
+                                                    page: Page, 
+                                                    article_metadata: List[Dict[str, Any]], 
+                                                    output_dir: str | Path,
+                                                    base_url: Optional[str] = None):
+        """
+        在现有浏览器会话中下载用户选定的文章（不关闭浏览器）
+        
+        这样可以保持会话状态，使用正确的payload格式
+        
+        Args:
+            page: 现有的Playwright页面对象
+            article_metadata: 用户选定的文章元数据列表
+            output_dir: 输出目录
+            base_url: 搜索结果页URL（用于重新访问）
+        """
+        print("\n" + "=" * 80)
+        print("下载选定文章（会话内）")
+        print("=" * 80)
+        
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            # 如果没有提供base_url，尝试从当前URL获取
+            if not base_url:
+                base_url = page.url
+                
+            # 获取p参数
+            parsed = urlparse(base_url)
+            query = parse_qs(parsed.query)
+            p_param = query.get('p', ['AWGLNB'])[0]
+            
+            print(f"\n[准备] 使用现有浏览器会话下载 {len(article_metadata)} 篇文章...")
+            print(f"  [会话] 保持登录状态")
+            print(f"  [参数] p={p_param}")
+            
+            # 导航到搜索结果第一页（确保在正确的页面状态）
+            first_page_url = self._build_page_url(base_url, 1)
+            print(f"\n[导航] 回到搜索结果第一页...")
+            await page.goto(first_page_url, wait_until="networkidle", timeout=60000)
+            await asyncio.sleep(2)
+            print(f"  [成功] 当前URL: {page.url[:60]}...")
+            
+            # 方法1: 直接使用API调用（与fetch_articles_via_api相同的方式）
+            # 这是最可靠的方式，使用与页面交互时相同的payload格式
+            print(f"\n[调用API] 下载 {len(article_metadata)} 篇文章...")
+            response_data = await self._call_download_api_with_articles(page, article_metadata, p_param)
+            
+            if response_data and response_data.get('body'):
+                body = response_data['body']
+                print(f"  [调试] API响应长度: {len(body)} bytes")
+                
+                # 检查是否是PDF
+                if body.startswith('%PDF'):
+                    print("  [警告] API返回PDF格式")
+                
+                # 解析文章
+                articles = self._parse_api_response(body, page_num=1)
+                print(f"  [成功] 解析到 {len(articles)} 篇文章")
+                
+                # 保存文章
+                await self.save_articles(page, articles, "", download_all=True)
+            else:
+                print("[错误] API调用失败，尝试备选方案...")
+                # 备选方案：逐个访问文章页面获取全文
+                await self.download_articles_one_by_one(page, article_metadata)
+            
+        except Exception as e:
+            print(f"\n[错误] {e}")
+            import traceback
+            traceback.print_exc()
+    
+    async def download_articles_one_by_one(self, page: Page, article_metadata: List[Dict[str, Any]]):
+        """
+        备选方案：逐个访问文章页面获取全文
+        当API调用失败时使用此方法
+        """
+        print("\n[备选方案] 逐个访问文章页面获取全文...")
+        
+        articles = []
+        for i, meta in enumerate(article_metadata, 1):
+            try:
+                docref = meta.get('docref', '')
+                title = meta.get('title', 'Unknown')[:50]
+                print(f"\n  [{i}/{len(article_metadata)}] 获取: {title}...")
+                
+                # 从docref构造URL
+                if docref.startswith('news/'):
+                    article_id = docref.replace('news/', '')
+                    article_url = f"https://infoweb-newsbank-com.ezproxy.sl.nsw.gov.au/apps/news/document-view?p=AWGLNB&doc={article_id}"
+                else:
+                    print(f"    [跳过] 无效的docref: {docref}")
+                    continue
+                
+                # 访问文章页面
+                await page.goto(article_url, wait_until="networkidle", timeout=30000)
+                await asyncio.sleep(2)
+                
+                # 提取全文
+                full_text = ""
+                selectors = [
+                    '.document-view__body',
+                    '.gnus-doc__body',
+                    '.document-text',
+                    'article'
+                ]
+                
+                for selector in selectors:
+                    elem = await page.query_selector(selector)
+                    if elem:
+                        full_text = await elem.inner_text()
+                        if len(full_text.strip()) > 100:
+                            break
+                
+                # 备选方案
+                if not full_text:
+                    paragraphs = await page.query_selector_all('p')
+                    texts = []
+                    for p in paragraphs:
+                        text = await p.inner_text()
+                        if len(text.strip()) > 20:
+                            texts.append(text)
+                    full_text = '\n\n'.join(texts)
+                
+                if full_text:
+                    article = ArticleInfo(
+                        title=meta.get('title', 'Unknown')[:300],
+                        date=meta.get('date', ''),
+                        source=meta.get('source', ''),
+                        author=meta.get('author', ''),
+                        preview=full_text[:1000],
+                        url=article_url,
+                        page_num=1,
+                        article_id=article_id if 'article_id' in dir() else None,
+                        word_count=len(full_text.split()),
+                        full_text=full_text
+                    )
+                    articles.append(article)
+                    print(f"    [成功] {len(full_text)} 字符")
+                else:
+                    print(f"    [失败] 无内容")
+                
+            except Exception as e:
+                print(f"    [错误] {e}")
+                continue
+            
+            # 延迟
+            if i < len(article_metadata):
+                await asyncio.sleep(1)
+        
+        if articles:
+            print(f"\n[完成] 获取到 {len(articles)} 篇文章")
+            await self.save_articles(page, articles, "", download_all=True)
+        else:
+            print("\n[错误] 未能获取任何文章")
 
 
 def main():
